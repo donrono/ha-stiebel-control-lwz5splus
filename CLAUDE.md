@@ -86,6 +86,12 @@ If `make smoke-test` fails, check `heatingpump/debug` for errors and investigate
   The LWZ 5S Plus and its BEDIENMODUL_2 do not answer the short form (index < 0x100 in byte 2).
 - Frame type = low nibble of byte 0: 0 write, 1 read, 2 response (see can2mqtt `CanFrame.cs`).
 - BEDIENMODUL_2 (0x301) answers the room / heating-circuit-1 signals itself; the KESSEL does not.
+- Device limits are **not** readable: the min/max reads with switch byte `0xF8`/`0xF9` instead of `0xFA`
+  (upstream PR bullitt186/ha-stiebel-control#90, measured on a WPL-A 07) got no answer on the LWZ 5S Plus.
+  Test 2026-11-25: 216 read requests (0xF8 + 0xF9 for every `writableNumbers[]` entry except the virtual
+  SG Ready numbers, each sent to its configured member KESSEL or BEDIENMODUL_2), run twice, 0 answers; a
+  raw-frame log of the second run showed no frame with the probed index or a switch byte 0xF7–0xF9.
+  The ranges in `writableNumbers[]` stay static (JSON `MinValue`/`MaxValue`, manual); don't port PR #90.
 - Every writable entity needs a matching read request (same signal, same member) in
   `signal_requests_lwz5splus.h`, otherwise HA never gets its state.
 - Signals from the probe of 2026-10-02: only those verified via `tmp/StiebelEltron.json` are requested;
