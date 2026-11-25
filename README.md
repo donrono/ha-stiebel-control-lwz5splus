@@ -8,7 +8,7 @@ signals to Home Assistant via MQTT discovery — no manual entity configuration 
 
 Based on the Elster protocol by [Jürg Müller](http://juerg5524.ch/list_data.php) and
 community work by [roberreiters](https://community.home-assistant.io/t/configured-my-esphome-with-mcp2515-can-bus-for-stiebel-eltron-heating-pump/366053) and
-[bullitt186].
+[bullitt186](https://github.com/bullitt186/ha-stiebel-control).
 
 ---
 
