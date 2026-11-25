@@ -37,7 +37,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install ESPHome
-        run: pip install esphome==2026.5.3
+        run: pip install esphome==2026.9.1
 
       - name: Use CI secrets
         run: cp esphome/ci_secrets.yaml esphome/secrets.yaml
@@ -45,28 +45,9 @@ jobs:
       - name: Compile (ESP32-S3)
         run: esphome compile esphome/ci_heatingpump_s3.yaml
 
-  compile-s2:
-    name: Compile ESP32-S2
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install ESPHome
-        run: pip install esphome==2026.5.3
-
-      - name: Use CI secrets
-        run: cp esphome/ci_secrets.yaml esphome/secrets.yaml
-
-      - name: Compile (ESP32-S2)
-        run: esphome compile esphome/ci_heatingpump_s2.yaml
-
   release:
     name: GitHub Release
-    needs: [compile-s3, compile-s2]
+    needs: [compile-s3]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -79,16 +60,13 @@ jobs:
           python-version: "3.12"
 
       - name: Install ESPHome
-        run: pip install esphome==2026.5.3
+        run: pip install esphome==2026.9.1
 
       - name: Use CI secrets
         run: cp esphome/ci_secrets.yaml esphome/secrets.yaml
 
       - name: Verify S3 firmware compiles
         run: esphome compile esphome/ci_heatingpump_s3.yaml
-
-      - name: Verify S2 firmware compiles
-        run: esphome compile esphome/ci_heatingpump_s2.yaml
 
       - name: Extract release notes
         run: |

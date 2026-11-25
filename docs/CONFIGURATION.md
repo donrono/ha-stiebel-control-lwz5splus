@@ -14,7 +14,6 @@ All keys are required unless marked optional.
 | `mqtt_username` | MQTT username | `"iotuser"` |
 | `mqtt_password` | MQTT password | `"secret"` |
 | `api_encryption_key` | 32-byte base64 key for ESPHome native API | `"abc...=="` |
-| `ota_password` | OTA update password | `"change_me"` |
 
 Generate `api_encryption_key`:
 ```bash
@@ -31,24 +30,17 @@ The key must match what HA's ESPHome integration has stored for this device. If 
 |--------------|-------------|---------|
 | `device_name` | ESPHome device hostname | `heatingpump` |
 | `friendly_name` | Display name in HA | `"Stiebel Eltron Wärmepumpe"` |
-| `device_model` | Heat pump model — selects signal table and HA device identifier | `"wpl13e"` |
+| `device_model` | Heat pump model — selects signal table and HA device identifier | `"lwz5splus"` |
 | `language` | Display language for HA entity names: `DE` (German, default) or `EN` (English) | `"DE"` |
 | `can_tx_pin` | CAN TX GPIO (ESP32-S3 built-in TWAI) | board-specific — see note below |
 | `can_rx_pin` | CAN RX GPIO (ESP32-S3 built-in TWAI) | board-specific — see note below |
-| `can_id_pc` | CAN bus ID for the ESP32 (PC role) | `"0x680"` |
-| `can_clk_pin` | SPI CLK (MCP2515 only) | board-specific — see note below |
-| `can_mosi_pin` | SPI MOSI (MCP2515 only) | board-specific — see note below |
-| `can_miso_pin` | SPI MISO (MCP2515 only) | board-specific — see note below |
-| `can_cs_pin` | SPI CS (MCP2515 only) | board-specific — see note below |
+| `can_id_pc` | CAN bus ID for the ESP32 (PC role) | `"0x69F"` (0x680 does not work) |
 
 > **Pin assignments are board-specific.** Always verify against your board's schematic
 > before wiring. Known working values for common boards:
 >
 > **Waveshare ESP32-S3-RS485-CAN** (recommended board):
 > `can_tx_pin: GPIO15`, `can_rx_pin: GPIO16`
->
-> **Generic ESP32 DevKit + MCP2515 module:**
-> `can_clk_pin: GPIO18`, `can_mosi_pin: GPIO23`, `can_miso_pin: GPIO19`, `can_cs_pin: GPIO5`
 >
 > These are the values shipped in `heatingpump.yaml`. Other boards may use different pins.
 
@@ -71,7 +63,7 @@ These entities appear automatically in HA via MQTT discovery:
 | `number.manager_sg_ready_boost_zustand_3` | SG Ready DHW boost for state 3 | 0–10°C | 0.5°C |
 | `number.manager_sg_ready_boost_zustand_4` | SG Ready DHW boost for state 4 | 0–15°C | 0.5°C |
 
-### Compressor Runtime Counters (WPL13E, sensor entities)
+### Compressor Runtime Counters (LWZ5SPLUS, sensor entities)
 
 | Entity ID | Description | Unit |
 |-----------|-------------|------|
@@ -84,7 +76,7 @@ These entities appear automatically in HA via MQTT discovery:
 
 ### CAN Bus Diagnostics (ESP32-S3 only, sensor entities)
 
-Available automatically on ESP32-S3 / TWAI builds. Not present on MCP2515 builds.
+Available automatically (ESP32-S3 / TWAI).
 
 | Entity ID | Description |
 |-----------|-------------|
@@ -113,10 +105,10 @@ Published to `heatingpump/calculated/` MQTT topics and auto-discovered in HA:
 | Date | `heatingpump/calculated/date/state` | `YYYY-MM-DD` from heat pump clock |
 | Time | `heatingpump/calculated/time/state` | `HH:MM:SS` from heat pump clock |
 | Betriebsart | `heatingpump/calculated/betriebsart/state` | "Sommerbetrieb" or "Normalbetrieb" |
-| Delta T (continuous) | `heatingpump/calculated/delta_t_continuous/state` | Flow − return temp, always |
-| Delta T (running) | `heatingpump/calculated/delta_t_running/state` | Flow − return temp, only when compressor active |
+| Delta T (continuous) | `heatingpump/calculated/delta_t_continuous/state` | Flow (`SAMMLERISTTEMP`) − return temp, always |
+| Delta T (running) | `heatingpump/calculated/delta_t_running/state` | Flow (`SAMMLERISTTEMP`) − return temp, only when compressor active |
 | Compressor active | `heatingpump/calculated/compressor_active/state` | on/off |
-| COP hot water | `heatingpump/calculated/cop_ww/state` | Coefficient of performance (DHW) |
+| COP hot water | `heatingpump/calculated/cop_ww/state` | Coefficient of performance (DHW), from the `_SUM_MWH` + `_SUM_KWH` counters |
 | COP heating | `heatingpump/calculated/cop_heiz/state` | Coefficient of performance (heating) |
 | COP total | `heatingpump/calculated/cop_gesamt/state` | Overall coefficient of performance |
 
@@ -133,7 +125,7 @@ heatingpump/{CAN_MEMBER}/{SIGNAL_NAME}/set       ← write (writable signals onl
 Examples:
 ```
 heatingpump/MANAGER/PROGRAMMSCHALTER/state       → "Tagbetrieb"
-heatingpump/MANAGER/EINSTELL_SPEICHERSOLLTEMP/set ← "55"
+heatingpump/MANAGER/WW_SOLL_TAG/set ← "55"
 heatingpump/KESSEL/SPEICHERISTTEMP/state         → "51.8"
 ```
 
@@ -148,12 +140,10 @@ heatingpump/status    → "online" or "offline"
 
 ## Polling Frequencies
 
-Edit `esphome/ha-stiebel-control/signal_requests_wpl13e.h` (or your model's file):
+Edit `esphome/ha-stiebel-control/signal_requests_lwz5splus.h` (or your model's file):
 
 ```cpp
 const SignalRequest signalRequests[] = {
-    SIGNAL_REQUESTS_BASE           // universal signals, fixed frequencies
-
     {"AUSSENTEMP",   FREQ_30S,  cm_kessel},    // every 30 seconds
     {"HEIZKURVE",    FREQ_10MIN, cm_manager},   // every 10 minutes
 };

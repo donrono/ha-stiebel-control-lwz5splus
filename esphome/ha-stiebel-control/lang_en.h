@@ -8,15 +8,15 @@
  * To add a translation: #undef LNAME_FOO, then #define LNAME_FOO "English"
  *
  * NOTE: This file is listed in esphome: includes: so ESPHome copies it to src/.
- * The overrides below are guarded by LANGUAGE_SELECT_ACTIVE so they are only
- * applied when language_select.h explicitly includes this file — not when
- * ESPHome auto-includes it directly from main.cpp.
+ * The overrides below are guarded by LANGUAGE_SELECT_ACTIVE and HA_LANGUAGE_EN: language_select.h
+ * always defines LANGUAGE_SELECT_ACTIVE, so without the language check the English names would
+ * also apply to a German build when ESPHome auto-includes this file from main.cpp.
  */
 
 #pragma once
 #include "lang_base.h"
 
-#if defined(LANGUAGE_SELECT_ACTIVE)
+#if defined(LANGUAGE_SELECT_ACTIVE) && defined(HA_LANGUAGE_EN)
 
 // ============================================================================
 // ElsterTable signal friendly names
@@ -209,6 +209,25 @@
 #define LNAME_CALC_CAN_BUS_ERRORS              "CAN Bus Errors"
 #undef  LNAME_CALC_CAN_STATE
 #define LNAME_CALC_CAN_STATE                   "CAN Bus State"
+#undef  LNAME_CALC_AVAILABLE
+#define LNAME_CALC_AVAILABLE                   "Heat Pump Available"
+#undef  LNAME_CALC_AVAILABILITY_STATUS
+#define LNAME_CALC_AVAILABILITY_STATUS         "Heat Pump Availability Status"
+#undef  LNAME_CALC_HEAP_FREE
+#define LNAME_CALC_HEAP_FREE                  "Free Heap (internal)"
+#undef  LNAME_CALC_HEAP_LARGEST_BLOCK
+#define LNAME_CALC_HEAP_LARGEST_BLOCK         "Largest Free Heap Block"
+#undef  LNAME_CALC_HEAP_MIN_FREE
+#define LNAME_CALC_HEAP_MIN_FREE              "Minimum Free Heap Since Boot"
+#undef  LNAME_CALC_UPTIME
+#define LNAME_CALC_UPTIME                     "Uptime"
+#undef  LNAME_CALC_CAN_RESTARTS
+#define LNAME_CALC_CAN_RESTARTS               "CAN Restarts (automatic)"
+#undef  LNAME_CALC_BETRIEBSSTATUS_TEXT
+#define LNAME_CALC_BETRIEBSSTATUS_TEXT        "Operating Status (decoded)"
+#undef  LNAME_CALC_VERDICHTERSTARTS
+#define LNAME_CALC_VERDICHTERSTARTS           "Compressor Starts"
+
 
 // ============================================================================
 // Writable number friendly names
@@ -265,4 +284,4 @@
 #define LNAME_COP_HEIZ                         "COP Heating"
 #undef  LNAME_COP_GESAMT
 #define LNAME_COP_GESAMT                       "COP Total"
-#endif // LANGUAGE_SELECT_ACTIVE
+#endif // LANGUAGE_SELECT_ACTIVE && HA_LANGUAGE_EN

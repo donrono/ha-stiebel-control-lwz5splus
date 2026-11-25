@@ -25,6 +25,8 @@
 
   const ElsterIndex * GetElsterIndex(unsigned short Index);
   const ElsterIndex * GetElsterIndex(const char * str);
+  // Resolve many names with a single pass over the table (fills the name cache)
+  void PreloadElsterNameCache(const char *const *names, size_t count);
   ElsterType GetElsterType(const char * str);
   void SetValueType(char * Val, unsigned char Type, unsigned short Value);
   void SetDoubleType(char * Val, unsigned char Type, double Value);

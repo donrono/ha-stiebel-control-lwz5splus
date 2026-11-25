@@ -37,8 +37,7 @@ than raw commands:
 | Target | What it does |
 |--------|-------------|
 | `make compile` | Compile ESP32-S3 variant |
-| `make compile-s2` | Compile ESP32-S2/MCP2515 variant |
-| `make check` | Compile both variants — full quality gate |
+| `make check` | Unit tests + compile — full quality gate |
 | `make test` | Run native Catch2 unit tests (no hardware) |
 | `make logs` | Stream live device logs |
 | `make upload` | Compile + OTA flash to production device |
@@ -66,7 +65,7 @@ Tell Claude: *"Add signal HEIZKURVE from cm_manager, polling every 10 minutes"*
 
 Claude will:
 1. Search `ElsterTable.h` to confirm the signal exists
-2. Add it to `signal_requests_wpl13e.h`
+2. Add it to `signal_requests_lwz5splus.h`
 3. Run `make config` to verify the YAML parses
 4. Run `make compile` to verify the C++ compiles
 
@@ -86,7 +85,7 @@ The smoke test asserts all required MQTT topics appear within 120 seconds. Exit 
 Tell Claude: *"Capture a new baseline after the signal table change"*
 
 Claude will run `make capture-baseline` (300-second capture), which overwrites
-`tests/models/wpl13e_smoke.json` with the freshly observed topics.
+`tests/models/lwz5splus_smoke.json` with the freshly observed topics.
 
 ### Investigate missing HA entities
 
@@ -142,7 +141,6 @@ Every push/PR to `main` runs:
 |-----|---------------|
 | `unit-tests` | Native Catch2 suite (138 tests, no hardware) |
 | `compile-s3` | Full ESP32-S3 firmware compile |
-| `compile-s2` | Full ESP32-S2/MCP2515 firmware compile |
 | `validate-yaml` | YAML lint on all package files |
 
 On `v*` tags, a `release` job additionally:

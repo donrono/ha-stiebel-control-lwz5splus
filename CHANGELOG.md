@@ -5,165 +5,42 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions: [Sem
 
 ---
 
-## [2.1.1] — 2026-07-25
+## [2.1.1_mod_ron]
 
-### Fixed
+### Removed
 
-- **Compile error with ESPHome 2026.7** — `-DHA_DEVICE_MODEL='"wpl13e"'` relied on PlatformIO's
-  shell-style quoting. The ESP-IDF/ninja build used since 2026.7 passes the flag through verbatim,
-  so the quotes ended up in the source (`error: missing terminating ' character`). The flag is now
-  quote-free and the string literal is built with `HA_DEVICE_MODEL_STR` in `config.h`. Closes #31.
-- **`-Wformat` warnings** — `CanId` (`uint32_t`) printed with `%x`/`%u` warned under the
-  ESP-IDF toolchain, where `uint32_t` is `long unsigned int`. Now cast explicitly.
-- Self-heal from TWAI bus-off instead of requiring a manual reset.
-- `PROGRAMMSCHALTER` option values are no longer translated (they are protocol values, not display
-  names), and garbage CAN writes are rejected.
-- Calculated/COP sensors and control sub-devices use the dynamic device id instead of a hard-coded
-  model.
-- `wpf10.yaml` was missing its `esphome: includes:` block.
-
-## [2.1.0] — 2026-06-14
+- **WPL 13 E support** — `wpl13e.yaml`, `signal_requests_wpl13e.h` and `tests/models/wpl13e_smoke.json` are gone. `lwz5splus.yaml` is the reference model; the CI entry points use it.
+- **WPF10 and ESP32-S2 / MCP2515 support** — model package, signal table and smoke stub for WPF10, `board_esp32s2.yaml`, `can_mcp2515.yaml`, `make compile-s2` and the CI S2 job are gone. ESP32-S3 (TWAI) is the only supported board.
+- SG Ready entities and topics moved from `MANAGER` to `KESSEL` (`heatingpump/KESSEL/SG_READY_*`).
+- Manager-based DHW setpoint writables (`WW_SOLL_TAG` / `EINSTELL_SPEICHERSOLLTEMP2` on `MANAGER`). The DHW setpoint is written to `KESSEL`; SG Ready writes to `KESSEL` as well.
 
 ### Added
 
-- **Multilingual entity names** — entity display names compile in German (default) or English.
-  Set `language: "EN"` in `heatingpump.yaml` substitutions. Zero flash overhead for the unused
-  language. Further languages can be added via `lang_XX.h` + one `#elif` in `language_select.h`.
-  See `docs/CONTRIBUTING.md` for a step-by-step guide.
-- **Writable room temperature setpoints** — `RAUMSOLLTEMP_II`, `RAUMSOLLTEMP_III`, and
-  `RAUMSOLLTEMP_NACHT` now appear as writable `number` entities in HA (10–30 °C, 0.5 °C step),
-  matching the existing `RAUMSOLLTEMP_I`. Closes #1.
-- **CAN bus diagnostic sensors** (ESP32-S3 only) — four new sensors (`CAN TX Fehlerzähler`,
-  `CAN RX Fehlerzähler`, `CAN Bus Fehler`, `CAN Bus Zustand`) published every 30 s using
-  `twai_get_status_info()`. Appear under the diagnostic category, disabled by default in HA.
-  Useful for debugging termination and ground issues without external tools. Closes #20.
-- **Compressor runtime sensors** — `LZ_VERD_*` signals (`Laufzeit Verdichter`) now appear in HA
-  with `device_class: duration`, `unit: h`, `state_class: total_increasing`. Polled every 10 min
-  from both HEIZMODUL and MANAGER. Closes #3.
+- Writable MQTT entities for LWZ5SPLUS: numbers, selects (value tables), switches, buttons (reset buttons disabled by default) and texts (switching programs as "HH:MM-HH:MM" / "---").
+- Calculated sensors `heatpump_available` (binary_sensor, connectivity) and `heatpump_availability_status`: the heat pump counts as available if it sends CAN messages, its clock deviates by at most 5 min from Home Assistant time and it answers our writes. Thresholds in `config.h` (`AVAILABILITY_*`). Needs the new `time:` component in `common.yaml` (SNTP, Europe/Berlin, plus homeassistant sync).
+
+- Self healing: the CAN controller is restarted if the heat pump (KESSEL) was alive but is silent for 10 min, the ESP reboots after 30 min of silence or if the free internal heap stays below 20 kB for 5 min. No reboot if the heat pump never answered since boot (no reboot loops). Thresholds in `config.h` (`SELF_HEAL_*`).
+- Diagnostic sensors: free internal heap, largest free heap block, minimum free heap since boot, uptime and number of automatic CAN restarts.
+
+- Writable entity discoveries are published paced (`DISCOVERY_PUMP_BATCH` per second) with retry instead of in one burst after the MQTT connect. The ESPHome MQTT client queues only 30 outbound messages, the burst of ~150 retained discoveries was lost, so number/switch/button/text entities were missing in Home Assistant until the next 15 min republish.
+
+- 194 signals that answered a read-only probe of the KESSEL (generic Elster names, not verified yet).
+- Calculated sensor `VERDICHTERSTARTS_GESAMT` on the KESSEL device (MQTT) instead of an ESPHome template sensor.
+- Read-only signal probe (`heatingpump/probe/start`).
 
 ### Fixed
 
-- `et_mil_val` signals incorrectly published as `device_class: temperature` / `unit: °C` — now
-  correctly `device_class: duration` / `unit: h`. Resolves HA warning about missing unit.
-- `LZ_VERD_*` signals had `isBlacklisted = true` in `ElsterTable.h`, silently dropping all CAN
-  responses before MQTT publish.
-- All-caps entity names for `ANTILEGIONELLEN`, `ANTILEGIONELLEN_ZEITPUNKT`, `BRENNER`,
-  `GEBAEUDEART`, `HEIZKURVE`, `WW_ECO`, `WW_HYSTERSE` — now show proper display names.
+- Reads and writes always use the extended index form (0xFA); short-form requests were not answered.
+- Buffer overflow in `processCanMessage()` (16-byte value buffer, "not used time domain" is 20 chars) that rebooted the device.
+- Internal heap: request schedule as a vector, no uid cache, discovered signals as 32-bit keys (24 kB → 140 kB free).
+- Read requests of other bus members and frames from unknown senders are ignored.
+- One wildcard subscription for all `.../set` command topics (the per-topic subscriptions overflowed the MQTT event queue).
 
-### Improved
+### Changed
 
-- **Test coverage** — 72 new unit test cases (392 assertions, up from 236). New coverage:
-  MQTT discovery payload structure, `updateSensor` caching and global state dispatch, all
-  calculated sensor publish functions, writable entity discovery, i18n macro resolution.
-- **Documentation** — `language` substitution in both installation paths, localization
-  contribution guide in `CONTRIBUTING.md`, updated entity reference tables in `CONFIGURATION.md`.
+- Faster startup of the signal request manager: all requested signal names are resolved in one pass over the Elster table (`PreloadElsterNameCache`), 72 ms instead of ~1.4 s.
+- Sensor `TEMPORALE_LUEFTUNGSSTUFE_DAUER` has the unit `min` (as the number entity).
 
-### Upgrade Notes
-
-No breaking changes. Existing `heatingpump.yaml` files without a `language` substitution
-compile with the German default — behaviour is unchanged. The new `LZ_VERD_*` sensors will
-appear as new entities after flashing. CAN diagnostic sensors are disabled by default in HA.
+- `EINSTELL_SPEICHERSOLLTEMP` (0x0013) renamed to `WW_SOLL_TAG`; topics and entity ids change accordingly.
 
 ---
-
-## [2.0.0] — 2026-06-13
-
-### Architecture
-
-- **Multi-model architecture**: Signal request tables split into a universal base
-  (`signal_requests_base.h`) and model-specific files. Adding a new heat pump model no
-  longer requires editing shared code — only a new `.h` + `.yaml` file pair.
-- **`device_model` substitution**: Controls the HA device identifier
-  (`stiebel_eltron_<model>`). Existing WPL13E users are unaffected.
-- **Generic sensors moved to `common.yaml`**: COP, energy accumulators, DHW temperature
-  sensors, and operating mode sensors are now shared across all models.
-  Model YAML files are now ~10 lines.
-
-### SG Ready Refactor
-
-- **`SgReadyController`**: Pure C++ class extracted from `ha-stiebel-control.h` with no
-  ESPHome dependencies. All side effects (CAN writes, MQTT publishes, NVS persistence)
-  injected via `ISgReadyIO` interface — fully unit-testable on the host.
-- **Automatic temperature boost**: States 3 and 4 now apply DHW and room temperature
-  boosts directly in firmware (no extra HA automations needed). Boost values configurable
-  via `number.manager_sg_ready_boost_zustand_3` / `_4`.
-- **NVS persistence**: Boost baseline temperatures survive device reboots.
-- **Fixed `write→delay→read` ordering** in CAN signal writes.
-
-### Testing
-
-- **Native Catch2 test suite**: 138 test cases, 236 assertions covering `SgReadyController`,
-  CAN protocol helpers (`generate_read_id`, `lookupCanMember`), Elster table functions
-  (`SetValueType`, `TranslateString`, `GetElsterIndex`), and NUtils.
-- Tests compile and run on the host with `make test` — no hardware or ESPHome toolchain needed.
-- **MQTT smoke test harness** (`tests/test_mqtt_smoke.py`): post-OTA regression check.
-  Subscribes for 120 seconds and verifies all required signals appear. Model-specific
-  required topics in `tests/models/<model>_smoke.json`. Run with `make smoke-test`.
-
-### New Models
-
-- **WPF10 / WPF10M** (`wpf10.yaml`): community-contributed ground-source heat pump model
-  based on PR #13 and issue #20. Signals marked unverified pending hardware validation.
-
-### Release Infrastructure
-
-- CI release job on `v*` tags: compiles both firmware variants, generates `manifest.json`,
-  creates GitHub Release with firmware artifacts.
-- `CHANGELOG.md`, `secrets.yaml.example`.
-
-### Agentic Dev Setup
-
-- `CLAUDE.md` importing `.github/copilot-instructions.md` — single source of truth for
-  Claude Code and GitHub Copilot.
-- `.claude/settings.json` — pre-approved `esphome`/`make`/`git` permissions.
-- `Makefile` — `compile`, `compile-s2`, `check`, `test`, `smoke-test`, `upload`, `capture-baseline`.
-- `.github/workflows/ci.yml` — compile + test + YAML lint on every push/PR.
-- Issue templates (bug report, feature request).
-
-### Documentation
-
-- Full documentation split across `docs/`: INSTALLATION, CONFIGURATION, ARCHITECTURE,
-  CONTRIBUTING, AGENTIC_DEVELOPMENT.
-- README rewritten as a lean entry point with TOC.
-- `SG_READY.md` translated to English and updated for current firmware behaviour.
-
-### Bug Fixes
-
-- **API encryption key**: Restored `encryption: key: !secret api_encryption_key` in
-  `api:` block to maintain HA native API connection across OTA updates.
-
----
-
-## [1.x] — 2023-08–2025-12
-
-Major milestones in the 1.x series (see git log for full history):
-
-### ESP32-S3 + Built-in CAN (late 2025)
-
-- Added ESP32-S3 support with built-in TWAI CAN controller (256 RX queue vs 2 on MCP2515).
-- Modular package architecture: `board_esp32s3.yaml`, `can_esp32.yaml`, `common.yaml`,
-  `wpl13e.yaml` as separate composable packages.
-- CAN buffer optimisation (256 RX / 64 TX entries).
-
-### MQTT Auto-Discovery & Custom Discovery (2024–2025)
-
-- Replaced ESPHome native MQTT discovery with custom C++ discovery publishing full HA
-  metadata (device class, unit, state class, icon) per signal.
-- Writable controls: MQTT number/select entities for temperature setpoints and operating mode.
-- Calculated sensors: COP, Delta-T, compressor status, date/time, betriebsart.
-- Frequency-based signal polling with round-robin scheduling and jitter.
-- Signal blacklisting via `isBlacklisted` flag in `ElsterTable.h`.
-- Per-signal HA metadata in `ElsterTable.h` (friendly names, units, device classes, icons).
-
-### SG Ready v1 (late 2025)
-
-- Initial SG Ready implementation with 4-state control.
-- Boost amount configurable via HA number entities.
-- NVS persistence for boost baseline temperatures.
-
-### Elster Protocol Library (2023)
-
-- Initial port of Jürg Müller's Elster protocol implementation to ESPHome.
-- `ElsterTable.h` with 3800+ signal definitions.
-- MCP2515 SPI CAN transceiver support.
-- Initial WPL13E signal table.

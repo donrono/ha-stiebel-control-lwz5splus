@@ -17,7 +17,7 @@ canbus:
     use_extended_id: false
     bit_rate: 20kbps
     # Increased buffer sizes to prevent overflows
-    # ESP32-S3 has much larger buffers than MCP2515 (2 RX buffers)
+    # Large buffers prevent overflows on the heat pump's busy CAN bus
     rx_queue_len: 256  # Default: 8, increased for high-traffic CAN bus
     tx_queue_len: 64   # Default: 16, increased for burst writes
     on_frame:

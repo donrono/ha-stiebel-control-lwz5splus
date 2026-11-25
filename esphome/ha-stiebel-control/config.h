@@ -11,7 +11,7 @@
 // ============================================================================
 // DEVICE MODEL
 // ============================================================================
-// The build injects the model unquoted (-DHA_DEVICE_MODEL=wpl13e). Quoting it
+// The build injects the model unquoted (-DHA_DEVICE_MODEL=lwz5splus). Quoting it
 // inside the build flag only works with the old PlatformIO build; the ESP-IDF /
 // ninja build used since ESPHome 2026.7 passes the flag through verbatim and
 // the shell quotes end up in the source ("missing terminating ' character").
@@ -23,12 +23,26 @@
 #define HA_STRINGIFY(x) HA_STRINGIFY_(x)
 #define HA_DEVICE_MODEL_STR HA_STRINGIFY(HA_DEVICE_MODEL)
 
+// CAN id of the ESP on the bus (PC role). Injected from the can_id_pc substitution
+// (-DHA_CAN_ID_PC=0x69F), the same value the canbus component uses as its own can_id.
+// Elster frame type (low nibble of byte 0) of a read request
+#define ELSTER_FRAME_READ 0x01
+
+#ifndef HA_CAN_ID_PC
+#define HA_CAN_ID_PC 0x69F // 0x680 does not work on the LWZ5S Plus
+#endif
+
 // ============================================================================
 // REQUEST MANAGER SETTINGS
 // ============================================================================
 
 // Delay after boot before starting signal requests (milliseconds)
 #define STARTUP_DELAY_MS 30000
+
+// Initial requests are spread randomly over at most this time (milliseconds), so that signals with
+// long intervals (e.g. FREQ_60MIN) deliver their first value shortly after start instead of up to
+// one full interval later. Subsequent requests follow the signal's own interval.
+#define INITIAL_REQUEST_SPREAD_MS 60000
 
 // Maximum number of requests to send per iteration (rate limiting)
 #define MAX_REQUESTS_PER_ITERATION 1
@@ -46,6 +60,51 @@
 #define FREQ_30MIN 1800
 #define FREQ_60MIN 3600
 
+// ============================================================================
+// HEAT PUMP AVAILABILITY (calculated sensor "heatpump_available")
+// ============================================================================
+
+// Update frequency of the availability sensor (in seconds)
+#define CALC_AVAILABILITY_FREQUENCY FREQ_10S
+
+// No CAN message from the heat pump (KESSEL) for this long = not available (seconds)
+#define AVAILABILITY_CAN_TIMEOUT_S 120
+
+// Maximum allowed difference between the heat pump clock and the real time (minutes)
+#define AVAILABILITY_CLOCK_TOLERANCE_MIN 5
+
+// A clock deviation must persist this long before it counts as a fault (seconds).
+// Date/time signals are polled separately, so a short deviation can be a sampling artefact.
+#define AVAILABILITY_CLOCK_CONFIRM_S 600
+
+// A write must be answered (read-back of the same signal) within this time (seconds)
+#define AVAILABILITY_WRITE_ACK_TIMEOUT_S 15
+
+// Unanswered writes are forgotten after this time (seconds)
+#define AVAILABILITY_WRITE_ACK_EXPIRE_S 300
+// Writable entity discoveries published per second after the MQTT connect (avoids a message burst)
+#define DISCOVERY_PUMP_BATCH 6
+
+// ============================================================================
+// SELF HEALING AND SYSTEM DIAGNOSTICS
+// ============================================================================
+
+// Publish heap / uptime diagnostics this often (in seconds)
+#define CALC_SYSTEM_DIAG_FREQUENCY FREQ_1MIN
+
+// Heat pump was alive but sends nothing for this long: restart the CAN controller (seconds).
+// Repeated at the same interval while the silence lasts.
+#define SELF_HEAL_CAN_RESTART_S 600
+
+// Heat pump was alive but sends nothing for this long: reboot the ESP (seconds).
+// Never triggered if the heat pump has not answered at all since boot (prevents reboot loops).
+#define SELF_HEAL_REBOOT_S 1800
+
+// Free internal heap below this many bytes for SELF_HEAL_LOW_HEAP_CONFIRM_S seconds: reboot.
+// Only evaluated after SELF_HEAL_MIN_UPTIME_S seconds of uptime (prevents reboot loops).
+#define SELF_HEAL_LOW_HEAP_B 20000
+#define SELF_HEAL_LOW_HEAP_CONFIRM_S 300
+#define SELF_HEAL_MIN_UPTIME_S 600
 // ============================================================================
 // CALCULATED SENSOR SETTINGS
 // ============================================================================

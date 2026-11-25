@@ -18,10 +18,10 @@
 
 esphome:
   name: heatingpump
-  friendly_name: "Heating Pump CAN Interface"
+  friendly_name: "Stiebel Eltron LWZ5 CAN Interface"
   project:
     name: "bullitt186.ha-stiebel-control"
-    version: "2.1.1"
+    version: "2.1.1_mod_ron"
   on_boot:
     priority: 600
     then:
@@ -37,16 +37,15 @@ esphome:
     - ha-stiebel-control/elster/NTypes.h
     - ha-stiebel-control/config.h
     - ha-stiebel-control/language_select.h
-    - ha-stiebel-control/lang_base.h
     - ha-stiebel-control/lang_en.h
+    - ha-stiebel-control/lang_base.h
     - ha-stiebel-control/sg_ready_controller.h
     - ha-stiebel-control/ha-stiebel-control.h
-    - ha-stiebel-control/signal_requests_base.h
     # model-specific signal_requests_*.h is declared by each model yaml package
-  platformio_options:
-    build_flags:
-      - "-DHA_DEVICE_MODEL=${device_model}"
-      - "-DHA_LANGUAGE_${language}"
+  build_flags:
+    - "-DHA_DEVICE_MODEL=${device_model}"
+    - "-DHA_LANGUAGE_${language}"
+    - "-DHA_CAN_ID_PC=${can_id_pc}"     # CAN id of the ESP (PC role), same value as the canbus can_id
 
 
 #########################################
@@ -57,7 +56,21 @@ esphome:
 logger:
   level: INFO
   baud_rate: 115200
+  logs:
+    canbus: INFO
+    stiebel_eltron: INFO
+    mqtt.component: WARN
+    mqtt.client: WARN
 
+# Real time (for the heat pump clock check of the availability sensor).
+# SNTP works without Home Assistant; the homeassistant platform additionally syncs over the API.
+# Both set the system clock, id(time_source).now() returns the same time either way.
+time:
+  - platform: sntp
+    id: time_source
+    timezone: Europe/Berlin
+  - platform: homeassistant
+    id: ha_time_sync
 
 #########################################
 #                                       #
@@ -71,7 +84,8 @@ api:
 
 ota:
   platform: esphome
-  password: f0e6110663e3bef67846f076d7e4db81
+  # Uploads are authenticated and encrypted with the API encryption key (api: encryption: key)
+  encryption:
 
 safe_mode:
   reboot_timeout: 5min
@@ -111,25 +125,279 @@ mqtt:
         format: "Connected to MQTT broker"
         tag: "MQTT_CONN"
     - lambda: |-
+        // One wildcard subscription for all ".../set" command topics (one subscription per topic
+        // overflowed the MQTT event queue at connect). Each topic keeps its own handler script.
+        static bool commandSubscriptionDone = false;
+        if (!commandSubscriptionDone) {
+          commandSubscriptionDone = true;
+          // Plain array (const char* + script pointer): a std::map initializer list put all ~250
+          // std::string pairs on the loop task stack at once and overflowed it (crash at MQTT connect).
+          struct CommandHandler { const char *topic; esphome::script::Script<std::string> *script; };
+          static const CommandHandler commandHandlers[] = {
+            {"heatingpump/KESSEL/PROGRAMMSCHALTER/set", id(set_KESSEL_PROGRAMMSCHALTER)},
+            {"heatingpump/KESSEL/SG_READY_STATE/set", id(set_KESSEL_SG_READY_STATE)},
+            {"heatingpump/KESSEL/SG_READY_BOOST_STATE3/set", id(set_KESSEL_SG_READY_BOOST_STATE3)},
+            {"heatingpump/KESSEL/SG_READY_BOOST_STATE4/set", id(set_KESSEL_SG_READY_BOOST_STATE4)},
+            {"heatingpump/BEDIENMODUL_2/RAUMSOLLTEMP_I/set", id(set_BEDIENMODUL_2_RAUMSOLLTEMP_I)},
+            {"heatingpump/BEDIENMODUL_2/RAUMSOLLTEMP_NACHT/set", id(set_BEDIENMODUL_2_RAUMSOLLTEMP_NACHT)},
+            {"heatingpump/KESSEL/LUEFT_STUFE_TAG/set", id(set_KESSEL_LUEFT_STUFE_TAG)},
+            {"heatingpump/KESSEL/TEMPORALE_LUEFTUNGSSTUFE_STUFE/set", id(set_KESSEL_TEMPORALE_LUEFTUNGSSTUFE_STUFE)},
+            {"heatingpump/KESSEL/TEMPORALE_LUEFTUNGSSTUFE_DAUER/set", id(set_KESSEL_TEMPORALE_LUEFTUNGSSTUFE_DAUER)},
+            {"heatingpump/BEDIENMODUL_2/ABWESENHEITSTEMP/set", id(set_BEDIENMODUL_2_ABWESENHEITSTEMP)},
+            {"heatingpump/BEDIENMODUL_2/HEIZKREISSOLL_HAND_HK1/set", id(set_BEDIENMODUL_2_HEIZKREISSOLL_HAND_HK1)},
+            {"heatingpump/KESSEL/LUEFT_STUFE_NACHT/set", id(set_KESSEL_LUEFT_STUFE_NACHT)},
+            {"heatingpump/KESSEL/LUEFT_STUFE_BEREITSCHAFT/set", id(set_KESSEL_LUEFT_STUFE_BEREITSCHAFT)},
+            {"heatingpump/KESSEL/LUEFTUNG_STUFE_PARTY/set", id(set_KESSEL_LUEFTUNG_STUFE_PARTY)},
+            {"heatingpump/KESSEL/LUEFTUNG_STUFE_HAND/set", id(set_KESSEL_LUEFTUNG_STUFE_HAND)},
+            {"heatingpump/KESSEL/LUEFTUNGSZEIT_AUSSERPL_ST_0/set", id(set_KESSEL_LUEFTUNGSZEIT_AUSSERPL_ST_0)},
+            {"heatingpump/KESSEL/LUEFTUNGSZEIT_AUSSERPL_ST_1/set", id(set_KESSEL_LUEFTUNGSZEIT_AUSSERPL_ST_1)},
+            {"heatingpump/KESSEL/LUEFTUNGSZEIT_AUSSERPL_ST_2/set", id(set_KESSEL_LUEFTUNGSZEIT_AUSSERPL_ST_2)},
+            {"heatingpump/KESSEL/LUEFTUNGSZEIT_AUSSERPL_ST_3/set", id(set_KESSEL_LUEFTUNGSZEIT_AUSSERPL_ST_3)},
+            {"heatingpump/KESSEL/LUEFTERSTUFE_ZULUFT_1/set", id(set_KESSEL_LUEFTERSTUFE_ZULUFT_1)},
+            {"heatingpump/KESSEL/LUEFTERSTUFE_ZULUFT_2/set", id(set_KESSEL_LUEFTERSTUFE_ZULUFT_2)},
+            {"heatingpump/KESSEL/LUEFTERSTUFE_ZULUFT_3/set", id(set_KESSEL_LUEFTERSTUFE_ZULUFT_3)},
+            {"heatingpump/KESSEL/LUEFTERSTUFE_ABLUFT_1/set", id(set_KESSEL_LUEFTERSTUFE_ABLUFT_1)},
+            {"heatingpump/KESSEL/LUEFTERSTUFE_ABLUFT_2/set", id(set_KESSEL_LUEFTERSTUFE_ABLUFT_2)},
+            {"heatingpump/KESSEL/LUEFTERSTUFE_ABLUFT_3/set", id(set_KESSEL_LUEFTERSTUFE_ABLUFT_3)},
+            {"heatingpump/BEDIENMODUL_2/HEIZKURVE/set", id(set_BEDIENMODUL_2_HEIZKURVE)},
+            {"heatingpump/BEDIENMODUL_2/RAUMEINFLUSS/set", id(set_BEDIENMODUL_2_RAUMEINFLUSS)},
+            {"heatingpump/BEDIENMODUL_2/FUSSPUNKT_HK1/set", id(set_BEDIENMODUL_2_FUSSPUNKT_HK1)},
+            {"heatingpump/BEDIENMODUL_2/ANTEIL_VORLAUF_HK1/set", id(set_BEDIENMODUL_2_ANTEIL_VORLAUF_HK1)},
+            {"heatingpump/BEDIENMODUL_2/MAX_TEMP_KESSEL/set", id(set_BEDIENMODUL_2_MAX_TEMP_KESSEL)},
+            {"heatingpump/BEDIENMODUL_2/MIN_TEMP_HZK/set", id(set_BEDIENMODUL_2_MIN_TEMP_HZK)},
+            {"heatingpump/KESSEL/WW_SOLL_TAG/set", id(set_KESSEL_WW_SOLL_TAG)},
+            {"heatingpump/KESSEL/WW_SOLL_NACHT/set", id(set_KESSEL_WW_SOLL_NACHT)},
+            {"heatingpump/KESSEL/WW_SOLL_BEREITSCHAFT/set", id(set_KESSEL_WW_SOLL_BEREITSCHAFT)},
+            {"heatingpump/KESSEL/WW_SOLL_HANDBETRIEB/set", id(set_KESSEL_WW_SOLL_HANDBETRIEB)},
+            {"heatingpump/KESSEL/WW_HYSTERSE/set", id(set_KESSEL_WW_HYSTERSE)},
+            {"heatingpump/KESSEL/WW_ZEITSPERREN_NOTHEIZUNG/set", id(set_KESSEL_WW_ZEITSPERREN_NOTHEIZUNG)},
+            {"heatingpump/KESSEL/TEMPERATUR_FREIGABE_NOTHEIZUNG/set", id(set_KESSEL_TEMPERATUR_FREIGABE_NOTHEIZUNG)},
+            {"heatingpump/KESSEL/ANTILEGIONELLEN_INTERVALL/set", id(set_KESSEL_ANTILEGIONELLEN_INTERVALL)},
+            {"heatingpump/KESSEL/MAX_WW_LADEZEIT/set", id(set_KESSEL_MAX_WW_LADEZEIT)},
+            {"heatingpump/KESSEL/WW_TEMPERATUR_LEGIONELLEN/set", id(set_KESSEL_WW_TEMPERATUR_LEGIONELLEN)},
+            {"heatingpump/KESSEL/NOTHEIZUNG_STUFE_WW/set", id(set_KESSEL_NOTHEIZUNG_STUFE_WW)},
+            {"heatingpump/KESSEL/MAX_VORLAUFTEMPERATUR_WW/set", id(set_KESSEL_MAX_VORLAUFTEMPERATUR_WW)},
+            {"heatingpump/KESSEL/WW_LEISTUNG_SOMMER/set", id(set_KESSEL_WW_LEISTUNG_SOMMER)},
+            {"heatingpump/KESSEL/WW_LEISTUNG_WINTER/set", id(set_KESSEL_WW_LEISTUNG_WINTER)},
+            {"heatingpump/KESSEL/SOMMERZEIT_MANUELL_BEGINN_TAG/set", id(set_KESSEL_SOMMERZEIT_MANUELL_BEGINN_TAG)},
+            {"heatingpump/KESSEL/SOMMERZEIT_MANUELL_ENDE_TAG/set", id(set_KESSEL_SOMMERZEIT_MANUELL_ENDE_TAG)},
+            {"heatingpump/KESSEL/VERDICHTER_TAKTUNG/set", id(set_KESSEL_VERDICHTER_TAKTUNG)},
+            {"heatingpump/KESSEL/DREHZAHL_FORTLUEFTUNG/set", id(set_KESSEL_DREHZAHL_FORTLUEFTUNG)},
+            {"heatingpump/KESSEL/ANLAUFSTROMBEGRENZUNG/set", id(set_KESSEL_ANLAUFSTROMBEGRENZUNG)},
+            {"heatingpump/KESSEL/PUMPENDREHZAHL_WW/set", id(set_KESSEL_PUMPENDREHZAHL_WW)},
+            {"heatingpump/KESSEL/PUMPENDREHZAHL_HEIZEN/set", id(set_KESSEL_PUMPENDREHZAHL_HEIZEN)},
+            {"heatingpump/KESSEL/VERHAELTNIS_MISCHER_HEIZEN/set", id(set_KESSEL_VERHAELTNIS_MISCHER_HEIZEN)},
+            {"heatingpump/KESSEL/MISCHER_P_TYP/set", id(set_KESSEL_MISCHER_P_TYP)},
+            {"heatingpump/KESSEL/SOLAR_P_TYP/set", id(set_KESSEL_SOLAR_P_TYP)},
+            {"heatingpump/KESSEL/MIN_PUMPZYKLEN/set", id(set_KESSEL_MIN_PUMPZYKLEN)},
+            {"heatingpump/KESSEL/MAX_PUMPZYKLEN/set", id(set_KESSEL_MAX_PUMPZYKLEN)},
+            {"heatingpump/KESSEL/AUSSENTEMPERATUR_MIN_PUMPZYKLEN/set", id(set_KESSEL_AUSSENTEMPERATUR_MIN_PUMPZYKLEN)},
+            {"heatingpump/KESSEL/AUSSENTEMPERATUR_MAX_PUMPZYKLEN/set", id(set_KESSEL_AUSSENTEMPERATUR_MAX_PUMPZYKLEN)},
+            {"heatingpump/KESSEL/EVU/set", id(set_KESSEL_EVU)},
+            {"heatingpump/KESSEL/DIFFERENZDRUCK_SOLL/set", id(set_KESSEL_DIFFERENZDRUCK_SOLL)},
+            {"heatingpump/KESSEL/I_FAKTOR_LUEFTER/set", id(set_KESSEL_I_FAKTOR_LUEFTER)},
+            {"heatingpump/KESSEL/P_FAKTOR_LUEFTER/set", id(set_KESSEL_P_FAKTOR_LUEFTER)},
+            {"heatingpump/KESSEL/PROPORTIONALANTEIL_HEIZEN/set", id(set_KESSEL_PROPORTIONALANTEIL_HEIZEN)},
+            {"heatingpump/KESSEL/INTEGRALANTEIL_INVERTER/set", id(set_KESSEL_INTEGRALANTEIL_INVERTER)},
+            {"heatingpump/KESSEL/HEIZEN_MAXIMALE_NE_STUFE/set", id(set_KESSEL_HEIZEN_MAXIMALE_NE_STUFE)},
+            {"heatingpump/KESSEL/HEIZEN_MAXIMALE_VORLAUFTEMPERATUR/set", id(set_KESSEL_HEIZEN_MAXIMALE_VORLAUFTEMPERATUR)},
+            {"heatingpump/KESSEL/HEIZGRENZE_TAG/set", id(set_KESSEL_HEIZGRENZE_TAG)},
+            {"heatingpump/KESSEL/SOMMER_HYSTERESE/set", id(set_KESSEL_SOMMER_HYSTERESE)},
+            {"heatingpump/KESSEL/AUSSENTEMPVERZOEGERUNG/set", id(set_KESSEL_AUSSENTEMPVERZOEGERUNG)},
+            {"heatingpump/KESSEL/BIVALENTPARALLELTEMPERATUR_HZG/set", id(set_KESSEL_BIVALENTPARALLELTEMPERATUR_HZG)},
+            {"heatingpump/KESSEL/ZEITSPERRE_NOTHEIZUNG/set", id(set_KESSEL_ZEITSPERRE_NOTHEIZUNG)},
+            {"heatingpump/KESSEL/KORREKTUR_AUSSENTEMPERATUR/set", id(set_KESSEL_KORREKTUR_AUSSENTEMPERATUR)},
+            {"heatingpump/KESSEL/WE_STB_TESTFUNKTION_16/set", id(set_KESSEL_WE_STB_TESTFUNKTION_16)},
+            {"heatingpump/KESSEL/AUSLEGUNGSTEMPERATUR_HEIZEN/set", id(set_KESSEL_AUSLEGUNGSTEMPERATUR_HEIZEN)},
+            {"heatingpump/KESSEL/LEISTUNG_AUSLEGUNG_HEIZEN/set", id(set_KESSEL_LEISTUNG_AUSLEGUNG_HEIZEN)},
+            {"heatingpump/KESSEL/FERIENANFANG_TAG/set", id(set_KESSEL_FERIENANFANG_TAG)},
+            {"heatingpump/KESSEL/FERIENANFANG_MONAT/set", id(set_KESSEL_FERIENANFANG_MONAT)},
+            {"heatingpump/KESSEL/FERIENANFANG_JAHR/set", id(set_KESSEL_FERIENANFANG_JAHR)},
+            {"heatingpump/KESSEL/FERIENENDE_TAG/set", id(set_KESSEL_FERIENENDE_TAG)},
+            {"heatingpump/KESSEL/FERIENENDE_MONAT/set", id(set_KESSEL_FERIENENDE_MONAT)},
+            {"heatingpump/KESSEL/FERIENENDE_JAHR/set", id(set_KESSEL_FERIENENDE_JAHR)},
+            {"heatingpump/KESSEL/MAX_VORVERLEGUNG/set", id(set_KESSEL_MAX_VORVERLEGUNG)},
+            {"heatingpump/KESSEL/FORTLUFT_SOLL/set", id(set_KESSEL_FORTLUFT_SOLL)},
+            {"heatingpump/KESSEL/LUEFTUNG_FEUCHTE_SCHWELLWERT/set", id(set_KESSEL_LUEFTUNG_FEUCHTE_SCHWELLWERT)},
+            {"heatingpump/KESSEL/FEUCHTE_HYSTERESE/set", id(set_KESSEL_FEUCHTE_HYSTERESE)},
+            {"heatingpump/KESSEL/LUEFTUNG_FEUCHTE_MASKIERZEIT/set", id(set_KESSEL_LUEFTUNG_FEUCHTE_MASKIERZEIT)},
+            {"heatingpump/KESSEL/MIN_SOLL_FEUCHTE/set", id(set_KESSEL_MIN_SOLL_FEUCHTE)},
+            {"heatingpump/KESSEL/LUEFTUNG_LEISTUNGSREDUKTION/set", id(set_KESSEL_LUEFTUNG_LEISTUNGSREDUKTION)},
+            {"heatingpump/KESSEL/MAX_SOLL_FEUCHTE/set", id(set_KESSEL_MAX_SOLL_FEUCHTE)},
+            {"heatingpump/KESSEL/LUEFTUNG_LEISTUNGSERHOEHUNG/set", id(set_KESSEL_LUEFTUNG_LEISTUNGSERHOEHUNG)},
+            {"heatingpump/KESSEL/MAXIMALE_ABTAUDAUER/set", id(set_KESSEL_MAXIMALE_ABTAUDAUER)},
+            {"heatingpump/KESSEL/ABTAUBEGINNSCHWELLE/set", id(set_KESSEL_ABTAUBEGINNSCHWELLE)},
+            {"heatingpump/KESSEL/DREHZAHLFILTER/set", id(set_KESSEL_DREHZAHLFILTER)},
+            {"heatingpump/KESSEL/FILTERWECHSEL_VOLUMEN/set", id(set_KESSEL_FILTERWECHSEL_VOLUMEN)},
+            {"heatingpump/KESSEL/ESTRICH_SOCKELTEMPERATUR/set", id(set_KESSEL_ESTRICH_SOCKELTEMPERATUR)},
+            {"heatingpump/KESSEL/ESTRICH_MAX_TEMPERATUR/set", id(set_KESSEL_ESTRICH_MAX_TEMPERATUR)},
+            {"heatingpump/KESSEL/ESTRICH_HALTEN_SOCKELTEMPERATUR/set", id(set_KESSEL_ESTRICH_HALTEN_SOCKELTEMPERATUR)},
+            {"heatingpump/KESSEL/ESTRICH_HALTEN_MAX_TEMPERATUR/set", id(set_KESSEL_ESTRICH_HALTEN_MAX_TEMPERATUR)},
+            {"heatingpump/KESSEL/ESTRICH_STEIGUNG_PRO_TAG/set", id(set_KESSEL_ESTRICH_STEIGUNG_PRO_TAG)},
+            {"heatingpump/KESSEL/RAUMFUEHLERKORREKTUR/set", id(set_KESSEL_RAUMFUEHLERKORREKTUR)},
+            {"heatingpump/KESSEL/TEMPERATUR_ABTAUENDE/set", id(set_KESSEL_TEMPERATUR_ABTAUENDE)},
+            {"heatingpump/KESSEL/RELATIVE_ABTAUDAUER2/set", id(set_KESSEL_RELATIVE_ABTAUDAUER2)},
+            {"heatingpump/KESSEL/EINFRIERSCHUTZ_NOTHEIZUNG/set", id(set_KESSEL_EINFRIERSCHUTZ_NOTHEIZUNG)},
+            {"heatingpump/KESSEL/ABTAUABBRUCH/set", id(set_KESSEL_ABTAUABBRUCH)},
+            {"heatingpump/KESSEL/POSITION_VENTIL/set", id(set_KESSEL_POSITION_VENTIL)},
+            {"heatingpump/KESSEL/SOMMERZEIT_MANUELL_BEGINN_MONAT/set", id(set_KESSEL_SOMMERZEIT_MANUELL_BEGINN_MONAT)},
+            {"heatingpump/KESSEL/SOMMERZEIT_MANUELL_ENDE_MONAT/set", id(set_KESSEL_SOMMERZEIT_MANUELL_ENDE_MONAT)},
+            {"heatingpump/KESSEL/LUEFTERREGELUNG/set", id(set_KESSEL_LUEFTERREGELUNG)},
+            {"heatingpump/KESSEL/PASSIVKUEHLUNG/set", id(set_KESSEL_PASSIVKUEHLUNG)},
+            {"heatingpump/KESSEL/LUEFTEN/set", id(set_KESSEL_LUEFTEN)},
+            {"heatingpump/KESSEL/STELLVENTIL_HEIZUNG_MANUELL/set", id(set_KESSEL_STELLVENTIL_HEIZUNG_MANUELL)},
+            {"heatingpump/KESSEL/STELLVENTIL_WARMWASSER_MANUELL/set", id(set_KESSEL_STELLVENTIL_WARMWASSER_MANUELL)},
+            {"heatingpump/KESSEL/MISCHERPUMPE_MANUELL/set", id(set_KESSEL_MISCHERPUMPE_MANUELL)},
+            {"heatingpump/KESSEL/MISCHER_AUF_MANUELL/set", id(set_KESSEL_MISCHER_AUF_MANUELL)},
+            {"heatingpump/KESSEL/MISCHER_ZU_MANUELL/set", id(set_KESSEL_MISCHER_ZU_MANUELL)},
+            {"heatingpump/KESSEL/NOTHEIZUNG_STUFE_1_MANUELL/set", id(set_KESSEL_NOTHEIZUNG_STUFE_1_MANUELL)},
+            {"heatingpump/KESSEL/NOTHEIZUNG_STUFE_2_MANUELL/set", id(set_KESSEL_NOTHEIZUNG_STUFE_2_MANUELL)},
+            {"heatingpump/KESSEL/NOTHEIZUNG_STUFE_3_MANUELL/set", id(set_KESSEL_NOTHEIZUNG_STUFE_3_MANUELL)},
+            {"heatingpump/KESSEL/UMSCHALTVENTIL_MANUELL/set", id(set_KESSEL_UMSCHALTVENTIL_MANUELL)},
+            {"heatingpump/KESSEL/VERDICHTER_MANUELL/set", id(set_KESSEL_VERDICHTER_MANUELL)},
+            {"heatingpump/KESSEL/DREHZAHL_ABLUEFTER_MANUELL/set", id(set_KESSEL_DREHZAHL_ABLUEFTER_MANUELL)},
+            {"heatingpump/KESSEL/DREHZAHL_ZULUEFTER_MANUELL/set", id(set_KESSEL_DREHZAHL_ZULUEFTER_MANUELL)},
+            {"heatingpump/KESSEL/FENSTER_AUF_MANUELL/set", id(set_KESSEL_FENSTER_AUF_MANUELL)},
+            {"heatingpump/KESSEL/WW_PUFFERBETRIEB/set", id(set_KESSEL_WW_PUFFERBETRIEB)},
+            {"heatingpump/KESSEL/WW_ECO_BETRIEB/set", id(set_KESSEL_WW_ECO_BETRIEB)},
+            {"heatingpump/KESSEL/INTEGRALSENSOR/set", id(set_KESSEL_INTEGRALSENSOR)},
+            {"heatingpump/KESSEL/ZWEITER_WW_SPEICHER/set", id(set_KESSEL_ZWEITER_WW_SPEICHER)},
+            {"heatingpump/KESSEL/SOMMERZEIT_AUTOMATIK/set", id(set_KESSEL_SOMMERZEIT_AUTOMATIK)},
+            {"heatingpump/KESSEL/NOTBETRIEB_AUTO/set", id(set_KESSEL_NOTBETRIEB_AUTO)},
+            {"heatingpump/KESSEL/PASSIVKUEHLUNG_FORTLUFT/set", id(set_KESSEL_PASSIVKUEHLUNG_FORTLUFT)},
+            {"heatingpump/KESSEL/LUFTSTOP_SOMMER_WW/set", id(set_KESSEL_LUFTSTOP_SOMMER_WW)},
+            {"heatingpump/KESSEL/FEUCHTEREGELUNG_EIN_AUS/set", id(set_KESSEL_FEUCHTEREGELUNG_EIN_AUS)},
+            {"heatingpump/KESSEL/LUEFTUNG_FREIGABE/set", id(set_KESSEL_LUEFTUNG_FREIGABE)},
+            {"heatingpump/KESSEL/ESTRICHFUNKTION/set", id(set_KESSEL_ESTRICHFUNKTION)},
+            {"heatingpump/KESSEL/LUEFTER_FILTER_RESET/set", id(set_KESSEL_LUEFTER_FILTER_RESET)},
+            {"heatingpump/KESSEL/FEHLERSPEICHER_LOESCHEN/set", id(set_KESSEL_FEHLERSPEICHER_LOESCHEN)},
+            {"heatingpump/KESSEL/RESET_REGLER/set", id(set_KESSEL_RESET_REGLER)},
+            {"heatingpump/KESSEL/WERKSEINSTELLUNG/set", id(set_KESSEL_WERKSEINSTELLUNG)},
+            {"heatingpump/KESSEL/ANTILEGIONELLEN_ZEIT/set", id(set_KESSEL_ANTILEGIONELLEN_ZEIT)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_MO_SO/set", id(set_BEDIENMODUL_2_HEIZPROG_1_MO_SO)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_MO_SO_SCHALT_2/set", id(set_BEDIENMODUL_2_HEIZPROG_1_MO_SO_SCHALT_2)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_MO_SO_SCHALT_3/set", id(set_BEDIENMODUL_2_HEIZPROG_1_MO_SO_SCHALT_3)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_MO/set", id(set_BEDIENMODUL_2_HEIZPROG_1_MO)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_MO_SCHALT_2/set", id(set_BEDIENMODUL_2_HEIZPROG_1_MO_SCHALT_2)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_MO_SCHALT_3/set", id(set_BEDIENMODUL_2_HEIZPROG_1_MO_SCHALT_3)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_DI/set", id(set_BEDIENMODUL_2_HEIZPROG_1_DI)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_DI_SCHALT_2/set", id(set_BEDIENMODUL_2_HEIZPROG_1_DI_SCHALT_2)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_DI_SCHALT_3/set", id(set_BEDIENMODUL_2_HEIZPROG_1_DI_SCHALT_3)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_MI/set", id(set_BEDIENMODUL_2_HEIZPROG_1_MI)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_MI_SCHALT_2/set", id(set_BEDIENMODUL_2_HEIZPROG_1_MI_SCHALT_2)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_MI_SCHALT_3/set", id(set_BEDIENMODUL_2_HEIZPROG_1_MI_SCHALT_3)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_DO/set", id(set_BEDIENMODUL_2_HEIZPROG_1_DO)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_DO_SCHALT_2/set", id(set_BEDIENMODUL_2_HEIZPROG_1_DO_SCHALT_2)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_DO_SCHALT_3/set", id(set_BEDIENMODUL_2_HEIZPROG_1_DO_SCHALT_3)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_FR/set", id(set_BEDIENMODUL_2_HEIZPROG_1_FR)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_FR_SCHALT_2/set", id(set_BEDIENMODUL_2_HEIZPROG_1_FR_SCHALT_2)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_FR_SCHALT_3/set", id(set_BEDIENMODUL_2_HEIZPROG_1_FR_SCHALT_3)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_SA/set", id(set_BEDIENMODUL_2_HEIZPROG_1_SA)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_SA_SCHALT_2/set", id(set_BEDIENMODUL_2_HEIZPROG_1_SA_SCHALT_2)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_SA_SCHALT_3/set", id(set_BEDIENMODUL_2_HEIZPROG_1_SA_SCHALT_3)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_SO/set", id(set_BEDIENMODUL_2_HEIZPROG_1_SO)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_SO_SCHALT_2/set", id(set_BEDIENMODUL_2_HEIZPROG_1_SO_SCHALT_2)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_SO_SCHALT_3/set", id(set_BEDIENMODUL_2_HEIZPROG_1_SO_SCHALT_3)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_MO_FR/set", id(set_BEDIENMODUL_2_HEIZPROG_1_MO_FR)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_MO_FR_SCHALT_2/set", id(set_BEDIENMODUL_2_HEIZPROG_1_MO_FR_SCHALT_2)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_MO_FR_SCHALT_3/set", id(set_BEDIENMODUL_2_HEIZPROG_1_MO_FR_SCHALT_3)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_SA_SO/set", id(set_BEDIENMODUL_2_HEIZPROG_1_SA_SO)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_SA_SO_SCHALT_2/set", id(set_BEDIENMODUL_2_HEIZPROG_1_SA_SO_SCHALT_2)},
+            {"heatingpump/BEDIENMODUL_2/HEIZPROG_1_SA_SO_SCHALT_3/set", id(set_BEDIENMODUL_2_HEIZPROG_1_SA_SO_SCHALT_3)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_MO_SO/set", id(set_KESSEL_W_WASSERPROG_1_MO_SO)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_MO_SO_SCHALT_2/set", id(set_KESSEL_W_WASSERPROG_1_MO_SO_SCHALT_2)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_MO_SO_SCHALT_3/set", id(set_KESSEL_W_WASSERPROG_1_MO_SO_SCHALT_3)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_MO/set", id(set_KESSEL_W_WASSERPROG_1_MO)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_MO_SCHALT_2/set", id(set_KESSEL_W_WASSERPROG_1_MO_SCHALT_2)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_MO_SCHALT_3/set", id(set_KESSEL_W_WASSERPROG_1_MO_SCHALT_3)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_DI/set", id(set_KESSEL_W_WASSERPROG_1_DI)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_DI_SCHALT_2/set", id(set_KESSEL_W_WASSERPROG_1_DI_SCHALT_2)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_DI_SCHALT_3/set", id(set_KESSEL_W_WASSERPROG_1_DI_SCHALT_3)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_MI/set", id(set_KESSEL_W_WASSERPROG_1_MI)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_MI_SCHALT_2/set", id(set_KESSEL_W_WASSERPROG_1_MI_SCHALT_2)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_MI_SCHALT_3/set", id(set_KESSEL_W_WASSERPROG_1_MI_SCHALT_3)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_DO/set", id(set_KESSEL_W_WASSERPROG_1_DO)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_DO_SCHALT_2/set", id(set_KESSEL_W_WASSERPROG_1_DO_SCHALT_2)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_DO_SCHALT_3/set", id(set_KESSEL_W_WASSERPROG_1_DO_SCHALT_3)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_FR/set", id(set_KESSEL_W_WASSERPROG_1_FR)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_FR_SCHALT_2/set", id(set_KESSEL_W_WASSERPROG_1_FR_SCHALT_2)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_FR_SCHALT_3/set", id(set_KESSEL_W_WASSERPROG_1_FR_SCHALT_3)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_SA/set", id(set_KESSEL_W_WASSERPROG_1_SA)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_SA_SCHALT_2/set", id(set_KESSEL_W_WASSERPROG_1_SA_SCHALT_2)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_SA_SCHALT_3/set", id(set_KESSEL_W_WASSERPROG_1_SA_SCHALT_3)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_SO/set", id(set_KESSEL_W_WASSERPROG_1_SO)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_SO_SCHALT_2/set", id(set_KESSEL_W_WASSERPROG_1_SO_SCHALT_2)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_SO_SCHALT_3/set", id(set_KESSEL_W_WASSERPROG_1_SO_SCHALT_3)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_MO_FR/set", id(set_KESSEL_W_WASSERPROG_1_MO_FR)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_MO_FR_SCHALT_2/set", id(set_KESSEL_W_WASSERPROG_1_MO_FR_SCHALT_2)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_MO_FR_SCHALT_3/set", id(set_KESSEL_W_WASSERPROG_1_MO_FR_SCHALT_3)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_SA_SO/set", id(set_KESSEL_W_WASSERPROG_1_SA_SO)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_SA_SO_SCHALT_2/set", id(set_KESSEL_W_WASSERPROG_1_SA_SO_SCHALT_2)},
+            {"heatingpump/KESSEL/W_WASSERPROG_1_SA_SO_SCHALT_3/set", id(set_KESSEL_W_WASSERPROG_1_SA_SO_SCHALT_3)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_MO_SO/set", id(set_KESSEL_ZBV_PROG_1_MO_SO)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_MO_SO_SCHALT_2/set", id(set_KESSEL_ZBV_PROG_1_MO_SO_SCHALT_2)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_MO_SO_SCHALT_3/set", id(set_KESSEL_ZBV_PROG_1_MO_SO_SCHALT_3)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_MO/set", id(set_KESSEL_ZBV_PROG_1_MO)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_MO_SCHALT_2/set", id(set_KESSEL_ZBV_PROG_1_MO_SCHALT_2)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_MO_SCHALT_3/set", id(set_KESSEL_ZBV_PROG_1_MO_SCHALT_3)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_DI/set", id(set_KESSEL_ZBV_PROG_1_DI)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_DI_SCHALT_2/set", id(set_KESSEL_ZBV_PROG_1_DI_SCHALT_2)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_DI_SCHALT_3/set", id(set_KESSEL_ZBV_PROG_1_DI_SCHALT_3)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_MI/set", id(set_KESSEL_ZBV_PROG_1_MI)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_MI_SCHALT_2/set", id(set_KESSEL_ZBV_PROG_1_MI_SCHALT_2)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_MI_SCHALT_3/set", id(set_KESSEL_ZBV_PROG_1_MI_SCHALT_3)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_DO/set", id(set_KESSEL_ZBV_PROG_1_DO)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_DO_SCHALT_2/set", id(set_KESSEL_ZBV_PROG_1_DO_SCHALT_2)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_DO_SCHALT_3/set", id(set_KESSEL_ZBV_PROG_1_DO_SCHALT_3)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_FR/set", id(set_KESSEL_ZBV_PROG_1_FR)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_FR_SCHALT_2/set", id(set_KESSEL_ZBV_PROG_1_FR_SCHALT_2)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_FR_SCHALT_3/set", id(set_KESSEL_ZBV_PROG_1_FR_SCHALT_3)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_SA/set", id(set_KESSEL_ZBV_PROG_1_SA)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_SA_SCHALT_2/set", id(set_KESSEL_ZBV_PROG_1_SA_SCHALT_2)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_SA_SCHALT_3/set", id(set_KESSEL_ZBV_PROG_1_SA_SCHALT_3)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_SO/set", id(set_KESSEL_ZBV_PROG_1_SO)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_SO_SCHALT_2/set", id(set_KESSEL_ZBV_PROG_1_SO_SCHALT_2)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_SO_SCHALT_3/set", id(set_KESSEL_ZBV_PROG_1_SO_SCHALT_3)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_MO_FR/set", id(set_KESSEL_ZBV_PROG_1_MO_FR)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_MO_FR_SCHALT_2/set", id(set_KESSEL_ZBV_PROG_1_MO_FR_SCHALT_2)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_MO_FR_SCHALT_3/set", id(set_KESSEL_ZBV_PROG_1_MO_FR_SCHALT_3)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_SA_SO/set", id(set_KESSEL_ZBV_PROG_1_SA_SO)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_SA_SO_SCHALT_2/set", id(set_KESSEL_ZBV_PROG_1_SA_SO_SCHALT_2)},
+            {"heatingpump/KESSEL/ZBV_PROG_1_SA_SO_SCHALT_3/set", id(set_KESSEL_ZBV_PROG_1_SA_SO_SCHALT_3)},
+            {"heatingpump/KESSEL/FERIEN_BEGINN_ZEIT/set", id(set_KESSEL_FERIEN_BEGINN_ZEIT)},
+            {"heatingpump/KESSEL/FERIEN_ENDE_ZEIT/set", id(set_KESSEL_FERIEN_ENDE_ZEIT)},
+            {"heatingpump/KESSEL/PARTYPROGRAMM_START/set", id(set_KESSEL_PARTYPROGRAMM_START)},
+            {"heatingpump/KESSEL/PARTYPROGRAMM_ENDE/set", id(set_KESSEL_PARTYPROGRAMM_ENDE)},
+            {"heatingpump/KESSEL/KOLLEKTORSCHUTZ/set", id(set_KESSEL_KOLLEKTORSCHUTZ)},
+            {"heatingpump/KESSEL/KOLLEKTORGRENZTEMPERATUR/set", id(set_KESSEL_KOLLEKTORGRENZTEMPERATUR)},
+            {"heatingpump/KESSEL/KOLLEKTORSPERRTEMPERATUR/set", id(set_KESSEL_KOLLEKTORSPERRTEMPERATUR)},
+            {"heatingpump/KESSEL/KOLLEKTORSCHUTZTEMPERATUR/set", id(set_KESSEL_KOLLEKTORSCHUTZTEMPERATUR)},
+            {"heatingpump/KESSEL/FREIGABE_SOLAR/set", id(set_KESSEL_FREIGABE_SOLAR)},
+            {"heatingpump/KESSEL/VERZOEGERUNG_VERDICHTER_WARMWASSER/set", id(set_KESSEL_VERZOEGERUNG_VERDICHTER_WARMWASSER)},
+            {"heatingpump/KESSEL/HYSTERESE_SOLAR/set", id(set_KESSEL_HYSTERESE_SOLAR)},
+            {"heatingpump/KESSEL/SOLAR_WARMWASSER_TEMPERATUR/set", id(set_KESSEL_SOLAR_WARMWASSER_TEMPERATUR)},
+            {"heatingpump/KESSEL/VORRANG_SOLAR/set", id(set_KESSEL_VORRANG_SOLAR)},
+            {"heatingpump/KESSEL/KUEHLZEIT/set", id(set_KESSEL_KUEHLZEIT)},
+            {"heatingpump/KESSEL/LEISTUNG_KUEHLEN/set", id(set_KESSEL_LEISTUNG_KUEHLEN)},
+          };
+          id(mqtt_client).subscribe("heatingpump/+/+/set", [](const std::string &topic, const std::string &payload) {
+            for (const auto &h : commandHandlers) {
+              if (strcmp(h.topic, topic.c_str()) == 0) {
+                h.script->execute(payload);
+                return;
+              }
+            }
+            ESP_LOGW("MQTT_CMD", "No handler for %s", topic.c_str());
+          });
+        }
+
         ESP_LOGI("MQTT_CONN", "Publishing writable entity discoveries...");
-        // Publish MQTT number discoveries for writable temperature setpoints
-        publishAllWritableNumberDiscoveries();
-        // Publish MQTT select discoveries for operating mode control
-        publishAllWritableSelectDiscoveries();
-        // Datetime control now handled by Home Assistant input_datetime helpers
+        // Writable entity discoveries (number, select, switch, button, text) are paced by the discovery pump
+        startWritableDiscoveryPump();
         ESP_LOGI("MQTT_CONN", "Discovery publication complete");
 
-        // Publish initial states for SG Ready controls
-        ESP_LOGI("MQTT_CONN", "Publishing initial SG Ready states...");
-        // Publish default SG Ready state (2 - Normal)
-        const char* sgStateStr = sgReadyOptions[1]; // Index 1 = "2 - Normal"
-        id(mqtt_client).publish("heatingpump/MANAGER/SG_READY_STATE/state", sgStateStr, strlen(sgStateStr), 0, true);
-        // Publish current boost values (reflect actual in-memory values, not hardcoded defaults)
-        char boost3Str[16], boost4Str[16];
-        snprintf(boost3Str, sizeof(boost3Str), "%.1f", sgReadyBoostState3Value());
-        snprintf(boost4Str, sizeof(boost4Str), "%.1f", sgReadyBoostState4Value());
-        id(mqtt_client).publish("heatingpump/MANAGER/SG_READY_BOOST_STATE3/state", boost3Str, strlen(boost3Str), 0, true);
-        id(mqtt_client).publish("heatingpump/MANAGER/SG_READY_BOOST_STATE4/state", boost4Str, strlen(boost4Str), 0, true);
+        // MQTT states of the SG Ready controls are published by the discovery pump once all
+        // discoveries are out (publishSgReadyStates); here they got lost in the connect burst.
         // Update sensors with initial values
         id(sg_ready_boost_state3_sensor).publish_state(sgReadyBoostState3Value());
         id(sg_ready_boost_state4_sensor).publish_state(sgReadyBoostState4Value());
@@ -156,157 +424,3192 @@ mqtt:
         - lambda: |-
             ESP_LOGI("MQTT_CMD", "Manual discovery republish triggered");
             republishAllDiscoveries();
-            publishAllWritableNumberDiscoveries(true);
-            publishAllWritableSelectDiscoveries(true);
+            startWritableDiscoveryPump(true);
             publishAllCalculatedSensorDiscoveries(true);
             ESP_LOGI("MQTT_CMD", "All discoveries republished");
 
-    # Temperature setpoint controls
-    - topic: heatingpump/MANAGER/EINSTELL_SPEICHERSOLLTEMP/set
+    # Read-only probe of all Elster signals (results on heatingpump/probe/result)
+    - topic: heatingpump/probe/start
       then:
         - lambda: |-
-            ESP_LOGI("MQTT_CMD", "Received EINSTELL_SPEICHERSOLLTEMP command: %s", x.c_str());
-            // Ensure discovery is published
-            publishWritableNumberDiscovery(writableNumbers[0]);
-            // Write to CAN bus
-            const char* value = x.c_str();
-            writeSignal(&CanMembers[cm_manager], "EINSTELL_SPEICHERSOLLTEMP", value);
-            // Read back to update state
-            readSignal(&CanMembers[cm_manager], "EINSTELL_SPEICHERSOLLTEMP");
+            startSignalProbe();
 
-    - topic: heatingpump/MANAGER/EINSTELL_SPEICHERSOLLTEMP2/set
+    # Read-only probe of selected indices, payload e.g. "0x05D0-0x05DF" or "0x05D2,0xFDE0"
+    - topic: heatingpump/probe/read
       then:
         - lambda: |-
-            ESP_LOGI("MQTT_CMD", "Received EINSTELL_SPEICHERSOLLTEMP2 command: %s", x.c_str());
-            // Ensure discovery is published
-            publishWritableNumberDiscovery(writableNumbers[1]);
-            // Write to CAN bus
-            const char* value = x.c_str();
-            writeSignal(&CanMembers[cm_manager], "EINSTELL_SPEICHERSOLLTEMP2", value);
-            // Read back to update state
-            readSignal(&CanMembers[cm_manager], "EINSTELL_SPEICHERSOLLTEMP2");
+            startTargetedProbe(x);
 
-    # Operating mode control
-    - topic: heatingpump/MANAGER/PROGRAMMSCHALTER/set
+    - topic: heatingpump/probe/stop
       then:
         - lambda: |-
-            ESP_LOGI("MQTT_CMD", "Received PROGRAMMSCHALTER command: %s", x.c_str());
-            // Ensure discovery is published
-            publishWritableSelectDiscovery(writableSelects[0]);
-            // Write to CAN bus
-            const char* value = x.c_str();
-            writeSignal(&CanMembers[cm_manager], "PROGRAMMSCHALTER", value);
-            // Read back to update state
-            readSignal(&CanMembers[cm_manager], "PROGRAMMSCHALTER");
+            stopSignalProbe();
 
-    # SG Ready state control
-    - topic: heatingpump/MANAGER/SG_READY_STATE/set
-      then:
-        - lambda: |-
-            ESP_LOGI("MQTT_CMD", "Received SG_READY_STATE command: %s", x.c_str());
-            // Ensure discovery is published
-            publishWritableSelectDiscovery(writableSelects[1]);
+#########################################
+#                                       #
+#   MQTT COMMAND HANDLERS (.../set)     #
+#                                       #
+#########################################
+# Called by the wildcard subscription in mqtt.on_connect; x = payload of the command topic.
+script:
+  # Operating mode control
+  - id: set_KESSEL_PROGRAMMSCHALTER
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received PROGRAMMSCHALTER command: %s", x.c_str());
+          // Ensure discovery is published
+          publishWritableSelectDiscovery(writableSelects[0]);
+          // Write to CAN bus
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "PROGRAMMSCHALTER", value);
+          // Read back to update state
+          readSignal(&CanMembers[cm_kessel], "PROGRAMMSCHALTER");
 
-            // Parse the state from the string (format: "1 - EVU Sperre", "2 - Normal", etc.)
-            int state = 0;
-            if (x.find("1 - ") == 0) state = 1;
-            else if (x.find("2 - ") == 0) state = 2;
-            else if (x.find("3 - ") == 0) state = 3;
-            else if (x.find("4 - ") == 0) state = 4;
+  # SG Ready state control
+  - id: set_KESSEL_SG_READY_STATE
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received SG_READY_STATE command: %s", x.c_str());
+          // Ensure discovery is published
+          publishWritableSelectDiscovery(writableSelects[1]);
 
-            if (state >= 1 && state <= 4) {
-                applySgReadyState(state);
-            } else {
-                ESP_LOGW("MQTT_CMD", "Invalid SG Ready state received: %s", x.c_str());
-            }
+          // Parse the state from the string (format: "1 - EVU Sperre", "2 - Normal", etc.)
+          int state = 0;
+          if (x.find("1 - ") == 0) state = 1;
+          else if (x.find("2 - ") == 0) state = 2;
+          else if (x.find("3 - ") == 0) state = 3;
+          else if (x.find("4 - ") == 0) state = 4;
 
-    # SG Ready boost temperature for State 3
-    - topic: heatingpump/MANAGER/SG_READY_BOOST_STATE3/set
-      then:
-        - lambda: |-
-            ESP_LOGI("MQTT_CMD", "Received SG_READY_BOOST_STATE3 command: %s", x.c_str());
-            // Ensure discovery is published
-            publishWritableNumberDiscovery(writableNumbers[2]);
-            // Parse and store the boost value
-            char* endPtr;
-            float boost = strtof(x.c_str(), &endPtr);
-            if (endPtr != x.c_str() && *endPtr == '\0' && boost >= 0.0 && boost <= 10.0) {
-                setSgReadyBoost3(boost);
-                ESP_LOGI("SG_READY", "State 3 boost set to %.1f°C", boost);
-                // Publish state back
-                char stateTopic[128];
-                snprintf(stateTopic, sizeof(stateTopic), "heatingpump/MANAGER/SG_READY_BOOST_STATE3/state");
-                char valueStr[16];
-                snprintf(valueStr, sizeof(valueStr), "%.1f", sgReadyBoostState3Value());
-                id(mqtt_client).publish(stateTopic, valueStr, strlen(valueStr), 0, true);
-                // Update sensor
-                id(sg_ready_boost_state3_sensor).publish_state(sgReadyBoostState3Value());
-            } else {
-                ESP_LOGW("MQTT_CMD", "Invalid boost value: %s", x.c_str());
-            }
+          if (state >= 1 && state <= 4) {
+              applySgReadyState(state);
+          } else {
+              ESP_LOGW("MQTT_CMD", "Invalid SG Ready state received: %s", x.c_str());
+          }
 
-    # SG Ready boost temperature for State 4
-    - topic: heatingpump/MANAGER/SG_READY_BOOST_STATE4/set
-      then:
-        - lambda: |-
-            ESP_LOGI("MQTT_CMD", "Received SG_READY_BOOST_STATE4 command: %s", x.c_str());
-            // Ensure discovery is published
-            publishWritableNumberDiscovery(writableNumbers[3]);
-            // Parse and store the boost value
-            char* endPtr;
-            float boost = strtof(x.c_str(), &endPtr);
-            if (endPtr != x.c_str() && *endPtr == '\0' && boost >= 0.0 && boost <= 15.0) {
-                setSgReadyBoost4(boost);
-                ESP_LOGI("SG_READY", "State 4 boost set to %.1f°C", boost);
-                // Publish state back
-                char stateTopic[128];
-                snprintf(stateTopic, sizeof(stateTopic), "heatingpump/MANAGER/SG_READY_BOOST_STATE4/state");
-                char valueStr[16];
-                snprintf(valueStr, sizeof(valueStr), "%.1f", sgReadyBoostState4Value());
-                id(mqtt_client).publish(stateTopic, valueStr, strlen(valueStr), 0, true);
-                // Update sensor
-                id(sg_ready_boost_state4_sensor).publish_state(sgReadyBoostState4Value());
-            } else {
-                ESP_LOGW("MQTT_CMD", "Invalid boost value: %s", x.c_str());
-            }
+  # SG Ready boost temperature for State 3
+  - id: set_KESSEL_SG_READY_BOOST_STATE3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received SG_READY_BOOST_STATE3 command: %s", x.c_str());
+          // Ensure discovery is published
+          publishWritableNumberDiscoveryByName("SG_READY_BOOST_STATE3", cm_kessel);
+          // Parse and store the boost value
+          char* endPtr;
+          float boost = strtof(x.c_str(), &endPtr);
+          if (endPtr != x.c_str() && *endPtr == '\0' && boost >= 0.0 && boost <= 10.0) {
+              setSgReadyBoost3(boost);
+              ESP_LOGI("SG_READY", "State 3 boost set to %.1f°C", boost);
+              // Publish state back
+              char stateTopic[128];
+              snprintf(stateTopic, sizeof(stateTopic), "heatingpump/KESSEL/SG_READY_BOOST_STATE3/state");
+              char valueStr[16];
+              snprintf(valueStr, sizeof(valueStr), "%.1f", sgReadyBoostState3Value());
+              id(mqtt_client).publish(stateTopic, valueStr, strlen(valueStr), 0, true);
+              // Update sensor
+              id(sg_ready_boost_state3_sensor).publish_state(sgReadyBoostState3Value());
+          } else {
+              ESP_LOGW("MQTT_CMD", "Invalid boost value: %s", x.c_str());
+          }
 
-    # Room temperature setpoints for heating circuits 1–3 and night/reduced mode
-    - topic: heatingpump/MANAGER/RAUMSOLLTEMP_I/set
-      then:
-        - lambda: |-
-            ESP_LOGI("MQTT_CMD", "Received RAUMSOLLTEMP_I command: %s", x.c_str());
-            publishWritableNumberDiscovery(writableNumbers[4]);
-            const char* value = x.c_str();
-            writeSignal(&CanMembers[cm_manager], "RAUMSOLLTEMP_I", value);
-            readSignal(&CanMembers[cm_manager], "RAUMSOLLTEMP_I");
+  # SG Ready boost temperature for State 4
+  - id: set_KESSEL_SG_READY_BOOST_STATE4
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received SG_READY_BOOST_STATE4 command: %s", x.c_str());
+          // Ensure discovery is published
+          publishWritableNumberDiscoveryByName("SG_READY_BOOST_STATE4", cm_kessel);
+          // Parse and store the boost value
+          char* endPtr;
+          float boost = strtof(x.c_str(), &endPtr);
+          if (endPtr != x.c_str() && *endPtr == '\0' && boost >= 0.0 && boost <= 15.0) {
+              setSgReadyBoost4(boost);
+              ESP_LOGI("SG_READY", "State 4 boost set to %.1f°C", boost);
+              // Publish state back
+              char stateTopic[128];
+              snprintf(stateTopic, sizeof(stateTopic), "heatingpump/KESSEL/SG_READY_BOOST_STATE4/state");
+              char valueStr[16];
+              snprintf(valueStr, sizeof(valueStr), "%.1f", sgReadyBoostState4Value());
+              id(mqtt_client).publish(stateTopic, valueStr, strlen(valueStr), 0, true);
+              // Update sensor
+              id(sg_ready_boost_state4_sensor).publish_state(sgReadyBoostState4Value());
+          } else {
+              ESP_LOGW("MQTT_CMD", "Invalid boost value: %s", x.c_str());
+          }
 
-    - topic: heatingpump/MANAGER/RAUMSOLLTEMP_II/set
-      then:
-        - lambda: |-
-            ESP_LOGI("MQTT_CMD", "Received RAUMSOLLTEMP_II command: %s", x.c_str());
-            publishWritableNumberDiscovery(writableNumbers[5]);
-            const char* value = x.c_str();
-            writeSignal(&CanMembers[cm_manager], "RAUMSOLLTEMP_II", value);
-            readSignal(&CanMembers[cm_manager], "RAUMSOLLTEMP_II");
+  # Room temperature setpoints for heating circuits 1–3 and night/reduced mode
+  - id: set_BEDIENMODUL_2_RAUMSOLLTEMP_I
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received RAUMSOLLTEMP_I command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("RAUMSOLLTEMP_I", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "RAUMSOLLTEMP_I", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "RAUMSOLLTEMP_I");
 
-    - topic: heatingpump/MANAGER/RAUMSOLLTEMP_III/set
-      then:
-        - lambda: |-
-            ESP_LOGI("MQTT_CMD", "Received RAUMSOLLTEMP_III command: %s", x.c_str());
-            publishWritableNumberDiscovery(writableNumbers[6]);
-            const char* value = x.c_str();
-            writeSignal(&CanMembers[cm_manager], "RAUMSOLLTEMP_III", value);
-            readSignal(&CanMembers[cm_manager], "RAUMSOLLTEMP_III");
+  - id: set_BEDIENMODUL_2_RAUMSOLLTEMP_NACHT
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received RAUMSOLLTEMP_NACHT command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("RAUMSOLLTEMP_NACHT", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "RAUMSOLLTEMP_NACHT", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "RAUMSOLLTEMP_NACHT");
 
-    - topic: heatingpump/MANAGER/RAUMSOLLTEMP_NACHT/set
-      then:
-        - lambda: |-
-            ESP_LOGI("MQTT_CMD", "Received RAUMSOLLTEMP_NACHT command: %s", x.c_str());
-            publishWritableNumberDiscovery(writableNumbers[7]);
-            const char* value = x.c_str();
-            writeSignal(&CanMembers[cm_manager], "RAUMSOLLTEMP_NACHT", value);
-            readSignal(&CanMembers[cm_manager], "RAUMSOLLTEMP_NACHT");
+  - id: set_KESSEL_LUEFT_STUFE_TAG
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received LUEFT_STUFE_TAG command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("LUEFT_STUFE_TAG", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "LUEFT_STUFE_TAG", value);
+          readSignal(&CanMembers[cm_kessel], "LUEFT_STUFE_TAG");
 
+  - id: set_KESSEL_TEMPORALE_LUEFTUNGSSTUFE_STUFE
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received TEMPORALE_LUEFTUNGSSTUFE_STUFE command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("TEMPORALE_LUEFTUNGSSTUFE_STUFE", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "TEMPORALE_LUEFTUNGSSTUFE_STUFE", value);
+          readSignal(&CanMembers[cm_kessel], "TEMPORALE_LUEFTUNGSSTUFE_STUFE");
+
+  - id: set_KESSEL_TEMPORALE_LUEFTUNGSSTUFE_DAUER
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received TEMPORALE_LUEFTUNGSSTUFE_DAUER command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("TEMPORALE_LUEFTUNGSSTUFE_DAUER", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "TEMPORALE_LUEFTUNGSSTUFE_DAUER", value);
+          readSignal(&CanMembers[cm_kessel], "TEMPORALE_LUEFTUNGSSTUFE_DAUER");
+
+  - id: set_BEDIENMODUL_2_ABWESENHEITSTEMP
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ABWESENHEITSTEMP command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("ABWESENHEITSTEMP", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "ABWESENHEITSTEMP", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "ABWESENHEITSTEMP");
+
+  - id: set_BEDIENMODUL_2_HEIZKREISSOLL_HAND_HK1
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZKREISSOLL_HAND_HK1 command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("HEIZKREISSOLL_HAND_HK1", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZKREISSOLL_HAND_HK1", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZKREISSOLL_HAND_HK1");
+
+  - id: set_KESSEL_LUEFT_STUFE_NACHT
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received LUEFT_STUFE_NACHT command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("LUEFT_STUFE_NACHT", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "LUEFT_STUFE_NACHT", value);
+          readSignal(&CanMembers[cm_kessel], "LUEFT_STUFE_NACHT");
+
+  - id: set_KESSEL_LUEFT_STUFE_BEREITSCHAFT
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received LUEFT_STUFE_BEREITSCHAFT command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("LUEFT_STUFE_BEREITSCHAFT", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "LUEFT_STUFE_BEREITSCHAFT", value);
+          readSignal(&CanMembers[cm_kessel], "LUEFT_STUFE_BEREITSCHAFT");
+
+  - id: set_KESSEL_LUEFTUNG_STUFE_PARTY
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received LUEFTUNG_STUFE_PARTY command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("LUEFTUNG_STUFE_PARTY", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "LUEFTUNG_STUFE_PARTY", value);
+          readSignal(&CanMembers[cm_kessel], "LUEFTUNG_STUFE_PARTY");
+
+  - id: set_KESSEL_LUEFTUNG_STUFE_HAND
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received LUEFTUNG_STUFE_HAND command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("LUEFTUNG_STUFE_HAND", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "LUEFTUNG_STUFE_HAND", value);
+          readSignal(&CanMembers[cm_kessel], "LUEFTUNG_STUFE_HAND");
+
+  - id: set_KESSEL_LUEFTUNGSZEIT_AUSSERPL_ST_0
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received LUEFTUNGSZEIT_AUSSERPL_ST_0 command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("LUEFTUNGSZEIT_AUSSERPL_ST_0", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "LUEFTUNGSZEIT_AUSSERPL_ST_0", value);
+          readSignal(&CanMembers[cm_kessel], "LUEFTUNGSZEIT_AUSSERPL_ST_0");
+
+  - id: set_KESSEL_LUEFTUNGSZEIT_AUSSERPL_ST_1
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received LUEFTUNGSZEIT_AUSSERPL_ST_1 command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("LUEFTUNGSZEIT_AUSSERPL_ST_1", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "LUEFTUNGSZEIT_AUSSERPL_ST_1", value);
+          readSignal(&CanMembers[cm_kessel], "LUEFTUNGSZEIT_AUSSERPL_ST_1");
+
+  - id: set_KESSEL_LUEFTUNGSZEIT_AUSSERPL_ST_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received LUEFTUNGSZEIT_AUSSERPL_ST_2 command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("LUEFTUNGSZEIT_AUSSERPL_ST_2", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "LUEFTUNGSZEIT_AUSSERPL_ST_2", value);
+          readSignal(&CanMembers[cm_kessel], "LUEFTUNGSZEIT_AUSSERPL_ST_2");
+
+  - id: set_KESSEL_LUEFTUNGSZEIT_AUSSERPL_ST_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received LUEFTUNGSZEIT_AUSSERPL_ST_3 command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("LUEFTUNGSZEIT_AUSSERPL_ST_3", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "LUEFTUNGSZEIT_AUSSERPL_ST_3", value);
+          readSignal(&CanMembers[cm_kessel], "LUEFTUNGSZEIT_AUSSERPL_ST_3");
+
+  - id: set_KESSEL_LUEFTERSTUFE_ZULUFT_1
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received LUEFTERSTUFE_ZULUFT_1 command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("LUEFTERSTUFE_ZULUFT_1", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "LUEFTERSTUFE_ZULUFT_1", value);
+          readSignal(&CanMembers[cm_kessel], "LUEFTERSTUFE_ZULUFT_1");
+
+  - id: set_KESSEL_LUEFTERSTUFE_ZULUFT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received LUEFTERSTUFE_ZULUFT_2 command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("LUEFTERSTUFE_ZULUFT_2", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "LUEFTERSTUFE_ZULUFT_2", value);
+          readSignal(&CanMembers[cm_kessel], "LUEFTERSTUFE_ZULUFT_2");
+
+  - id: set_KESSEL_LUEFTERSTUFE_ZULUFT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received LUEFTERSTUFE_ZULUFT_3 command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("LUEFTERSTUFE_ZULUFT_3", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "LUEFTERSTUFE_ZULUFT_3", value);
+          readSignal(&CanMembers[cm_kessel], "LUEFTERSTUFE_ZULUFT_3");
+
+  - id: set_KESSEL_LUEFTERSTUFE_ABLUFT_1
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received LUEFTERSTUFE_ABLUFT_1 command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("LUEFTERSTUFE_ABLUFT_1", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "LUEFTERSTUFE_ABLUFT_1", value);
+          readSignal(&CanMembers[cm_kessel], "LUEFTERSTUFE_ABLUFT_1");
+
+  - id: set_KESSEL_LUEFTERSTUFE_ABLUFT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received LUEFTERSTUFE_ABLUFT_2 command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("LUEFTERSTUFE_ABLUFT_2", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "LUEFTERSTUFE_ABLUFT_2", value);
+          readSignal(&CanMembers[cm_kessel], "LUEFTERSTUFE_ABLUFT_2");
+
+  - id: set_KESSEL_LUEFTERSTUFE_ABLUFT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received LUEFTERSTUFE_ABLUFT_3 command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("LUEFTERSTUFE_ABLUFT_3", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "LUEFTERSTUFE_ABLUFT_3", value);
+          readSignal(&CanMembers[cm_kessel], "LUEFTERSTUFE_ABLUFT_3");
+
+  - id: set_BEDIENMODUL_2_HEIZKURVE
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZKURVE command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("HEIZKURVE", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZKURVE", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZKURVE");
+
+  - id: set_BEDIENMODUL_2_RAUMEINFLUSS
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received RAUMEINFLUSS command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("RAUMEINFLUSS", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "RAUMEINFLUSS", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "RAUMEINFLUSS");
+
+  - id: set_BEDIENMODUL_2_FUSSPUNKT_HK1
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received FUSSPUNKT_HK1 command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("FUSSPUNKT_HK1", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "FUSSPUNKT_HK1", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "FUSSPUNKT_HK1");
+
+  - id: set_BEDIENMODUL_2_ANTEIL_VORLAUF_HK1
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ANTEIL_VORLAUF_HK1 command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("ANTEIL_VORLAUF_HK1", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "ANTEIL_VORLAUF_HK1", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "ANTEIL_VORLAUF_HK1");
+
+  - id: set_BEDIENMODUL_2_MAX_TEMP_KESSEL
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received MAX_TEMP_KESSEL command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("MAX_TEMP_KESSEL", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "MAX_TEMP_KESSEL", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "MAX_TEMP_KESSEL");
+
+  - id: set_BEDIENMODUL_2_MIN_TEMP_HZK
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received MIN_TEMP_HZK command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("MIN_TEMP_HZK", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "MIN_TEMP_HZK", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "MIN_TEMP_HZK");
+
+  - id: set_KESSEL_WW_SOLL_TAG
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received WW_SOLL_TAG command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("WW_SOLL_TAG", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "WW_SOLL_TAG", value);
+          readSignal(&CanMembers[cm_kessel], "WW_SOLL_TAG");
+
+  - id: set_KESSEL_WW_SOLL_NACHT
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received WW_SOLL_NACHT command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("WW_SOLL_NACHT", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "WW_SOLL_NACHT", value);
+          readSignal(&CanMembers[cm_kessel], "WW_SOLL_NACHT");
+
+  - id: set_KESSEL_WW_SOLL_BEREITSCHAFT
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received WW_SOLL_BEREITSCHAFT command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("WW_SOLL_BEREITSCHAFT", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "WW_SOLL_BEREITSCHAFT", value);
+          readSignal(&CanMembers[cm_kessel], "WW_SOLL_BEREITSCHAFT");
+
+  - id: set_KESSEL_WW_SOLL_HANDBETRIEB
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received WW_SOLL_HANDBETRIEB command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("WW_SOLL_HANDBETRIEB", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "WW_SOLL_HANDBETRIEB", value);
+          readSignal(&CanMembers[cm_kessel], "WW_SOLL_HANDBETRIEB");
+
+  - id: set_KESSEL_WW_HYSTERSE
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received WW_HYSTERSE command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("WW_HYSTERSE", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "WW_HYSTERSE", value);
+          readSignal(&CanMembers[cm_kessel], "WW_HYSTERSE");
+
+  - id: set_KESSEL_WW_ZEITSPERREN_NOTHEIZUNG
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received WW_ZEITSPERREN_NOTHEIZUNG command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("WW_ZEITSPERREN_NOTHEIZUNG", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "WW_ZEITSPERREN_NOTHEIZUNG", value);
+          readSignal(&CanMembers[cm_kessel], "WW_ZEITSPERREN_NOTHEIZUNG");
+
+  - id: set_KESSEL_TEMPERATUR_FREIGABE_NOTHEIZUNG
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received TEMPERATUR_FREIGABE_NOTHEIZUNG command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("TEMPERATUR_FREIGABE_NOTHEIZUNG", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "TEMPERATUR_FREIGABE_NOTHEIZUNG", value);
+          readSignal(&CanMembers[cm_kessel], "TEMPERATUR_FREIGABE_NOTHEIZUNG");
+
+  - id: set_KESSEL_ANTILEGIONELLEN_INTERVALL
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ANTILEGIONELLEN_INTERVALL command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("ANTILEGIONELLEN_INTERVALL", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ANTILEGIONELLEN_INTERVALL", value);
+          readSignal(&CanMembers[cm_kessel], "ANTILEGIONELLEN_INTERVALL");
+
+  - id: set_KESSEL_MAX_WW_LADEZEIT
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received MAX_WW_LADEZEIT command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("MAX_WW_LADEZEIT", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "MAX_WW_LADEZEIT", value);
+          readSignal(&CanMembers[cm_kessel], "MAX_WW_LADEZEIT");
+
+  - id: set_KESSEL_WW_TEMPERATUR_LEGIONELLEN
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received WW_TEMPERATUR_LEGIONELLEN command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("WW_TEMPERATUR_LEGIONELLEN", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "WW_TEMPERATUR_LEGIONELLEN", value);
+          readSignal(&CanMembers[cm_kessel], "WW_TEMPERATUR_LEGIONELLEN");
+
+  - id: set_KESSEL_NOTHEIZUNG_STUFE_WW
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received NOTHEIZUNG_STUFE_WW command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("NOTHEIZUNG_STUFE_WW", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "NOTHEIZUNG_STUFE_WW", value);
+          readSignal(&CanMembers[cm_kessel], "NOTHEIZUNG_STUFE_WW");
+
+  - id: set_KESSEL_MAX_VORLAUFTEMPERATUR_WW
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received MAX_VORLAUFTEMPERATUR_WW command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("MAX_VORLAUFTEMPERATUR_WW", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "MAX_VORLAUFTEMPERATUR_WW", value);
+          readSignal(&CanMembers[cm_kessel], "MAX_VORLAUFTEMPERATUR_WW");
+
+  - id: set_KESSEL_WW_LEISTUNG_SOMMER
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received WW_LEISTUNG_SOMMER command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("WW_LEISTUNG_SOMMER", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "WW_LEISTUNG_SOMMER", value);
+          readSignal(&CanMembers[cm_kessel], "WW_LEISTUNG_SOMMER");
+
+  - id: set_KESSEL_WW_LEISTUNG_WINTER
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received WW_LEISTUNG_WINTER command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("WW_LEISTUNG_WINTER", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "WW_LEISTUNG_WINTER", value);
+          readSignal(&CanMembers[cm_kessel], "WW_LEISTUNG_WINTER");
+
+  - id: set_KESSEL_SOMMERZEIT_MANUELL_BEGINN_TAG
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received SOMMERZEIT_MANUELL_BEGINN_TAG command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("SOMMERZEIT_MANUELL_BEGINN_TAG", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "SOMMERZEIT_MANUELL_BEGINN_TAG", value);
+          readSignal(&CanMembers[cm_kessel], "SOMMERZEIT_MANUELL_BEGINN_TAG");
+
+  - id: set_KESSEL_SOMMERZEIT_MANUELL_ENDE_TAG
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received SOMMERZEIT_MANUELL_ENDE_TAG command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("SOMMERZEIT_MANUELL_ENDE_TAG", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "SOMMERZEIT_MANUELL_ENDE_TAG", value);
+          readSignal(&CanMembers[cm_kessel], "SOMMERZEIT_MANUELL_ENDE_TAG");
+
+  - id: set_KESSEL_VERDICHTER_TAKTUNG
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received VERDICHTER_TAKTUNG command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("VERDICHTER_TAKTUNG", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "VERDICHTER_TAKTUNG", value);
+          readSignal(&CanMembers[cm_kessel], "VERDICHTER_TAKTUNG");
+
+  - id: set_KESSEL_DREHZAHL_FORTLUEFTUNG
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received DREHZAHL_FORTLUEFTUNG command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("DREHZAHL_FORTLUEFTUNG", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "DREHZAHL_FORTLUEFTUNG", value);
+          readSignal(&CanMembers[cm_kessel], "DREHZAHL_FORTLUEFTUNG");
+
+  - id: set_KESSEL_ANLAUFSTROMBEGRENZUNG
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ANLAUFSTROMBEGRENZUNG command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("ANLAUFSTROMBEGRENZUNG", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ANLAUFSTROMBEGRENZUNG", value);
+          readSignal(&CanMembers[cm_kessel], "ANLAUFSTROMBEGRENZUNG");
+
+  - id: set_KESSEL_PUMPENDREHZAHL_WW
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received PUMPENDREHZAHL_WW command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("PUMPENDREHZAHL_WW", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "PUMPENDREHZAHL_WW", value);
+          readSignal(&CanMembers[cm_kessel], "PUMPENDREHZAHL_WW");
+
+  - id: set_KESSEL_PUMPENDREHZAHL_HEIZEN
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received PUMPENDREHZAHL_HEIZEN command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("PUMPENDREHZAHL_HEIZEN", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "PUMPENDREHZAHL_HEIZEN", value);
+          readSignal(&CanMembers[cm_kessel], "PUMPENDREHZAHL_HEIZEN");
+
+  - id: set_KESSEL_VERHAELTNIS_MISCHER_HEIZEN
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received VERHAELTNIS_MISCHER_HEIZEN command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("VERHAELTNIS_MISCHER_HEIZEN", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "VERHAELTNIS_MISCHER_HEIZEN", value);
+          readSignal(&CanMembers[cm_kessel], "VERHAELTNIS_MISCHER_HEIZEN");
+
+  - id: set_KESSEL_MISCHER_P_TYP
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received MISCHER_P_TYP command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("MISCHER_P_TYP", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "MISCHER_P_TYP", value);
+          readSignal(&CanMembers[cm_kessel], "MISCHER_P_TYP");
+
+  - id: set_KESSEL_SOLAR_P_TYP
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received SOLAR_P_TYP command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("SOLAR_P_TYP", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "SOLAR_P_TYP", value);
+          readSignal(&CanMembers[cm_kessel], "SOLAR_P_TYP");
+
+  - id: set_KESSEL_MIN_PUMPZYKLEN
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received MIN_PUMPZYKLEN command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("MIN_PUMPZYKLEN", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "MIN_PUMPZYKLEN", value);
+          readSignal(&CanMembers[cm_kessel], "MIN_PUMPZYKLEN");
+
+  - id: set_KESSEL_MAX_PUMPZYKLEN
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received MAX_PUMPZYKLEN command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("MAX_PUMPZYKLEN", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "MAX_PUMPZYKLEN", value);
+          readSignal(&CanMembers[cm_kessel], "MAX_PUMPZYKLEN");
+
+  - id: set_KESSEL_AUSSENTEMPERATUR_MIN_PUMPZYKLEN
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received AUSSENTEMPERATUR_MIN_PUMPZYKLEN command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("AUSSENTEMPERATUR_MIN_PUMPZYKLEN", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "AUSSENTEMPERATUR_MIN_PUMPZYKLEN", value);
+          readSignal(&CanMembers[cm_kessel], "AUSSENTEMPERATUR_MIN_PUMPZYKLEN");
+
+  - id: set_KESSEL_AUSSENTEMPERATUR_MAX_PUMPZYKLEN
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received AUSSENTEMPERATUR_MAX_PUMPZYKLEN command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("AUSSENTEMPERATUR_MAX_PUMPZYKLEN", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "AUSSENTEMPERATUR_MAX_PUMPZYKLEN", value);
+          readSignal(&CanMembers[cm_kessel], "AUSSENTEMPERATUR_MAX_PUMPZYKLEN");
+
+  - id: set_KESSEL_EVU
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received EVU command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("EVU", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "EVU", value);
+          readSignal(&CanMembers[cm_kessel], "EVU");
+
+  - id: set_KESSEL_DIFFERENZDRUCK_SOLL
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received DIFFERENZDRUCK_SOLL command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("DIFFERENZDRUCK_SOLL", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "DIFFERENZDRUCK_SOLL", value);
+          readSignal(&CanMembers[cm_kessel], "DIFFERENZDRUCK_SOLL");
+
+  - id: set_KESSEL_I_FAKTOR_LUEFTER
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received I_FAKTOR_LUEFTER command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("I_FAKTOR_LUEFTER", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "I_FAKTOR_LUEFTER", value);
+          readSignal(&CanMembers[cm_kessel], "I_FAKTOR_LUEFTER");
+
+  - id: set_KESSEL_P_FAKTOR_LUEFTER
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received P_FAKTOR_LUEFTER command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("P_FAKTOR_LUEFTER", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "P_FAKTOR_LUEFTER", value);
+          readSignal(&CanMembers[cm_kessel], "P_FAKTOR_LUEFTER");
+
+  - id: set_KESSEL_PROPORTIONALANTEIL_HEIZEN
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received PROPORTIONALANTEIL_HEIZEN command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("PROPORTIONALANTEIL_HEIZEN", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "PROPORTIONALANTEIL_HEIZEN", value);
+          readSignal(&CanMembers[cm_kessel], "PROPORTIONALANTEIL_HEIZEN");
+
+  - id: set_KESSEL_INTEGRALANTEIL_INVERTER
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received INTEGRALANTEIL_INVERTER command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("INTEGRALANTEIL_INVERTER", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "INTEGRALANTEIL_INVERTER", value);
+          readSignal(&CanMembers[cm_kessel], "INTEGRALANTEIL_INVERTER");
+
+  - id: set_KESSEL_HEIZEN_MAXIMALE_NE_STUFE
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZEN_MAXIMALE_NE_STUFE command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("HEIZEN_MAXIMALE_NE_STUFE", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "HEIZEN_MAXIMALE_NE_STUFE", value);
+          readSignal(&CanMembers[cm_kessel], "HEIZEN_MAXIMALE_NE_STUFE");
+
+  - id: set_KESSEL_HEIZEN_MAXIMALE_VORLAUFTEMPERATUR
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZEN_MAXIMALE_VORLAUFTEMPERATUR command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("HEIZEN_MAXIMALE_VORLAUFTEMPERATUR", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "HEIZEN_MAXIMALE_VORLAUFTEMPERATUR", value);
+          readSignal(&CanMembers[cm_kessel], "HEIZEN_MAXIMALE_VORLAUFTEMPERATUR");
+
+  - id: set_KESSEL_HEIZGRENZE_TAG
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZGRENZE_TAG command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("HEIZGRENZE_TAG", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "HEIZGRENZE_TAG", value);
+          readSignal(&CanMembers[cm_kessel], "HEIZGRENZE_TAG");
+
+  - id: set_KESSEL_SOMMER_HYSTERESE
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received SOMMER_HYSTERESE command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("SOMMER_HYSTERESE", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "SOMMER_HYSTERESE", value);
+          readSignal(&CanMembers[cm_kessel], "SOMMER_HYSTERESE");
+
+  - id: set_KESSEL_AUSSENTEMPVERZOEGERUNG
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received AUSSENTEMPVERZOEGERUNG command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("AUSSENTEMPVERZOEGERUNG", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "AUSSENTEMPVERZOEGERUNG", value);
+          readSignal(&CanMembers[cm_kessel], "AUSSENTEMPVERZOEGERUNG");
+
+  - id: set_KESSEL_BIVALENTPARALLELTEMPERATUR_HZG
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received BIVALENTPARALLELTEMPERATUR_HZG command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("BIVALENTPARALLELTEMPERATUR_HZG", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "BIVALENTPARALLELTEMPERATUR_HZG", value);
+          readSignal(&CanMembers[cm_kessel], "BIVALENTPARALLELTEMPERATUR_HZG");
+
+  - id: set_KESSEL_ZEITSPERRE_NOTHEIZUNG
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZEITSPERRE_NOTHEIZUNG command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("ZEITSPERRE_NOTHEIZUNG", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZEITSPERRE_NOTHEIZUNG", value);
+          readSignal(&CanMembers[cm_kessel], "ZEITSPERRE_NOTHEIZUNG");
+
+  - id: set_KESSEL_KORREKTUR_AUSSENTEMPERATUR
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received KORREKTUR_AUSSENTEMPERATUR command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("KORREKTUR_AUSSENTEMPERATUR", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "KORREKTUR_AUSSENTEMPERATUR", value);
+          readSignal(&CanMembers[cm_kessel], "KORREKTUR_AUSSENTEMPERATUR");
+
+  - id: set_KESSEL_WE_STB_TESTFUNKTION_16
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received WE_STB_TESTFUNKTION_16 command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("WE_STB_TESTFUNKTION_16", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "WE_STB_TESTFUNKTION_16", value);
+          readSignal(&CanMembers[cm_kessel], "WE_STB_TESTFUNKTION_16");
+
+  - id: set_KESSEL_AUSLEGUNGSTEMPERATUR_HEIZEN
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received AUSLEGUNGSTEMPERATUR_HEIZEN command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("AUSLEGUNGSTEMPERATUR_HEIZEN", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "AUSLEGUNGSTEMPERATUR_HEIZEN", value);
+          readSignal(&CanMembers[cm_kessel], "AUSLEGUNGSTEMPERATUR_HEIZEN");
+
+  - id: set_KESSEL_LEISTUNG_AUSLEGUNG_HEIZEN
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received LEISTUNG_AUSLEGUNG_HEIZEN command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("LEISTUNG_AUSLEGUNG_HEIZEN", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "LEISTUNG_AUSLEGUNG_HEIZEN", value);
+          readSignal(&CanMembers[cm_kessel], "LEISTUNG_AUSLEGUNG_HEIZEN");
+
+  - id: set_KESSEL_FERIENANFANG_TAG
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received FERIENANFANG_TAG command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("FERIENANFANG_TAG", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "FERIENANFANG_TAG", value);
+          readSignal(&CanMembers[cm_kessel], "FERIENANFANG_TAG");
+
+  - id: set_KESSEL_FERIENANFANG_MONAT
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received FERIENANFANG_MONAT command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("FERIENANFANG_MONAT", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "FERIENANFANG_MONAT", value);
+          readSignal(&CanMembers[cm_kessel], "FERIENANFANG_MONAT");
+
+  - id: set_KESSEL_FERIENANFANG_JAHR
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received FERIENANFANG_JAHR command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("FERIENANFANG_JAHR", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "FERIENANFANG_JAHR", value);
+          readSignal(&CanMembers[cm_kessel], "FERIENANFANG_JAHR");
+
+  - id: set_KESSEL_FERIENENDE_TAG
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received FERIENENDE_TAG command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("FERIENENDE_TAG", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "FERIENENDE_TAG", value);
+          readSignal(&CanMembers[cm_kessel], "FERIENENDE_TAG");
+
+  - id: set_KESSEL_FERIENENDE_MONAT
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received FERIENENDE_MONAT command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("FERIENENDE_MONAT", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "FERIENENDE_MONAT", value);
+          readSignal(&CanMembers[cm_kessel], "FERIENENDE_MONAT");
+
+  - id: set_KESSEL_FERIENENDE_JAHR
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received FERIENENDE_JAHR command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("FERIENENDE_JAHR", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "FERIENENDE_JAHR", value);
+          readSignal(&CanMembers[cm_kessel], "FERIENENDE_JAHR");
+
+  - id: set_KESSEL_MAX_VORVERLEGUNG
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received MAX_VORVERLEGUNG command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("MAX_VORVERLEGUNG", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "MAX_VORVERLEGUNG", value);
+          readSignal(&CanMembers[cm_kessel], "MAX_VORVERLEGUNG");
+
+  - id: set_KESSEL_FORTLUFT_SOLL
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received FORTLUFT_SOLL command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("FORTLUFT_SOLL", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "FORTLUFT_SOLL", value);
+          readSignal(&CanMembers[cm_kessel], "FORTLUFT_SOLL");
+
+  - id: set_KESSEL_LUEFTUNG_FEUCHTE_SCHWELLWERT
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received LUEFTUNG_FEUCHTE_SCHWELLWERT command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("LUEFTUNG_FEUCHTE_SCHWELLWERT", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "LUEFTUNG_FEUCHTE_SCHWELLWERT", value);
+          readSignal(&CanMembers[cm_kessel], "LUEFTUNG_FEUCHTE_SCHWELLWERT");
+
+  - id: set_KESSEL_FEUCHTE_HYSTERESE
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received FEUCHTE_HYSTERESE command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("FEUCHTE_HYSTERESE", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "FEUCHTE_HYSTERESE", value);
+          readSignal(&CanMembers[cm_kessel], "FEUCHTE_HYSTERESE");
+
+  - id: set_KESSEL_LUEFTUNG_FEUCHTE_MASKIERZEIT
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received LUEFTUNG_FEUCHTE_MASKIERZEIT command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("LUEFTUNG_FEUCHTE_MASKIERZEIT", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "LUEFTUNG_FEUCHTE_MASKIERZEIT", value);
+          readSignal(&CanMembers[cm_kessel], "LUEFTUNG_FEUCHTE_MASKIERZEIT");
+
+  - id: set_KESSEL_MIN_SOLL_FEUCHTE
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received MIN_SOLL_FEUCHTE command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("MIN_SOLL_FEUCHTE", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "MIN_SOLL_FEUCHTE", value);
+          readSignal(&CanMembers[cm_kessel], "MIN_SOLL_FEUCHTE");
+
+  - id: set_KESSEL_LUEFTUNG_LEISTUNGSREDUKTION
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received LUEFTUNG_LEISTUNGSREDUKTION command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("LUEFTUNG_LEISTUNGSREDUKTION", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "LUEFTUNG_LEISTUNGSREDUKTION", value);
+          readSignal(&CanMembers[cm_kessel], "LUEFTUNG_LEISTUNGSREDUKTION");
+
+  - id: set_KESSEL_MAX_SOLL_FEUCHTE
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received MAX_SOLL_FEUCHTE command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("MAX_SOLL_FEUCHTE", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "MAX_SOLL_FEUCHTE", value);
+          readSignal(&CanMembers[cm_kessel], "MAX_SOLL_FEUCHTE");
+
+  - id: set_KESSEL_LUEFTUNG_LEISTUNGSERHOEHUNG
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received LUEFTUNG_LEISTUNGSERHOEHUNG command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("LUEFTUNG_LEISTUNGSERHOEHUNG", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "LUEFTUNG_LEISTUNGSERHOEHUNG", value);
+          readSignal(&CanMembers[cm_kessel], "LUEFTUNG_LEISTUNGSERHOEHUNG");
+
+  - id: set_KESSEL_MAXIMALE_ABTAUDAUER
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received MAXIMALE_ABTAUDAUER command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("MAXIMALE_ABTAUDAUER", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "MAXIMALE_ABTAUDAUER", value);
+          readSignal(&CanMembers[cm_kessel], "MAXIMALE_ABTAUDAUER");
+
+  - id: set_KESSEL_ABTAUBEGINNSCHWELLE
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ABTAUBEGINNSCHWELLE command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("ABTAUBEGINNSCHWELLE", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ABTAUBEGINNSCHWELLE", value);
+          readSignal(&CanMembers[cm_kessel], "ABTAUBEGINNSCHWELLE");
+
+  - id: set_KESSEL_DREHZAHLFILTER
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received DREHZAHLFILTER command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("DREHZAHLFILTER", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "DREHZAHLFILTER", value);
+          readSignal(&CanMembers[cm_kessel], "DREHZAHLFILTER");
+
+  - id: set_KESSEL_FILTERWECHSEL_VOLUMEN
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received FILTERWECHSEL_VOLUMEN command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("FILTERWECHSEL_VOLUMEN", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "FILTERWECHSEL_VOLUMEN", value);
+          readSignal(&CanMembers[cm_kessel], "FILTERWECHSEL_VOLUMEN");
+
+  - id: set_KESSEL_ESTRICH_SOCKELTEMPERATUR
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ESTRICH_SOCKELTEMPERATUR command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("ESTRICH_SOCKELTEMPERATUR", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ESTRICH_SOCKELTEMPERATUR", value);
+          readSignal(&CanMembers[cm_kessel], "ESTRICH_SOCKELTEMPERATUR");
+
+  - id: set_KESSEL_ESTRICH_MAX_TEMPERATUR
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ESTRICH_MAX_TEMPERATUR command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("ESTRICH_MAX_TEMPERATUR", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ESTRICH_MAX_TEMPERATUR", value);
+          readSignal(&CanMembers[cm_kessel], "ESTRICH_MAX_TEMPERATUR");
+
+  - id: set_KESSEL_ESTRICH_HALTEN_SOCKELTEMPERATUR
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ESTRICH_HALTEN_SOCKELTEMPERATUR command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("ESTRICH_HALTEN_SOCKELTEMPERATUR", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ESTRICH_HALTEN_SOCKELTEMPERATUR", value);
+          readSignal(&CanMembers[cm_kessel], "ESTRICH_HALTEN_SOCKELTEMPERATUR");
+
+  - id: set_KESSEL_ESTRICH_HALTEN_MAX_TEMPERATUR
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ESTRICH_HALTEN_MAX_TEMPERATUR command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("ESTRICH_HALTEN_MAX_TEMPERATUR", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ESTRICH_HALTEN_MAX_TEMPERATUR", value);
+          readSignal(&CanMembers[cm_kessel], "ESTRICH_HALTEN_MAX_TEMPERATUR");
+
+  - id: set_KESSEL_ESTRICH_STEIGUNG_PRO_TAG
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ESTRICH_STEIGUNG_PRO_TAG command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("ESTRICH_STEIGUNG_PRO_TAG", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ESTRICH_STEIGUNG_PRO_TAG", value);
+          readSignal(&CanMembers[cm_kessel], "ESTRICH_STEIGUNG_PRO_TAG");
+
+  - id: set_KESSEL_RAUMFUEHLERKORREKTUR
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received RAUMFUEHLERKORREKTUR command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("RAUMFUEHLERKORREKTUR", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "RAUMFUEHLERKORREKTUR", value);
+          readSignal(&CanMembers[cm_kessel], "RAUMFUEHLERKORREKTUR");
+
+  - id: set_KESSEL_TEMPERATUR_ABTAUENDE
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received TEMPERATUR_ABTAUENDE command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("TEMPERATUR_ABTAUENDE", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "TEMPERATUR_ABTAUENDE", value);
+          readSignal(&CanMembers[cm_kessel], "TEMPERATUR_ABTAUENDE");
+
+  - id: set_KESSEL_RELATIVE_ABTAUDAUER2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received RELATIVE_ABTAUDAUER2 command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("RELATIVE_ABTAUDAUER2", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "RELATIVE_ABTAUDAUER2", value);
+          readSignal(&CanMembers[cm_kessel], "RELATIVE_ABTAUDAUER2");
+
+  - id: set_KESSEL_EINFRIERSCHUTZ_NOTHEIZUNG
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received EINFRIERSCHUTZ_NOTHEIZUNG command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("EINFRIERSCHUTZ_NOTHEIZUNG", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "EINFRIERSCHUTZ_NOTHEIZUNG", value);
+          readSignal(&CanMembers[cm_kessel], "EINFRIERSCHUTZ_NOTHEIZUNG");
+
+  - id: set_KESSEL_ABTAUABBRUCH
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ABTAUABBRUCH command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("ABTAUABBRUCH", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ABTAUABBRUCH", value);
+          readSignal(&CanMembers[cm_kessel], "ABTAUABBRUCH");
+
+  - id: set_KESSEL_POSITION_VENTIL
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received POSITION_VENTIL command: %s", x.c_str());
+          publishWritableSelectDiscoveryByName("POSITION_VENTIL", cm_kessel);
+          const char* value = writableSelectCanValue("POSITION_VENTIL", cm_kessel, x.c_str());
+          if (value == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid POSITION_VENTIL option: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "POSITION_VENTIL", value);
+              readSignal(&CanMembers[cm_kessel], "POSITION_VENTIL");
+          }
+
+  - id: set_KESSEL_SOMMERZEIT_MANUELL_BEGINN_MONAT
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received SOMMERZEIT_MANUELL_BEGINN_MONAT command: %s", x.c_str());
+          publishWritableSelectDiscoveryByName("SOMMERZEIT_MANUELL_BEGINN_MONAT", cm_kessel);
+          const char* value = writableSelectCanValue("SOMMERZEIT_MANUELL_BEGINN_MONAT", cm_kessel, x.c_str());
+          if (value == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid SOMMERZEIT_MANUELL_BEGINN_MONAT option: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "SOMMERZEIT_MANUELL_BEGINN_MONAT", value);
+              readSignal(&CanMembers[cm_kessel], "SOMMERZEIT_MANUELL_BEGINN_MONAT");
+          }
+
+  - id: set_KESSEL_SOMMERZEIT_MANUELL_ENDE_MONAT
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received SOMMERZEIT_MANUELL_ENDE_MONAT command: %s", x.c_str());
+          publishWritableSelectDiscoveryByName("SOMMERZEIT_MANUELL_ENDE_MONAT", cm_kessel);
+          const char* value = writableSelectCanValue("SOMMERZEIT_MANUELL_ENDE_MONAT", cm_kessel, x.c_str());
+          if (value == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid SOMMERZEIT_MANUELL_ENDE_MONAT option: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "SOMMERZEIT_MANUELL_ENDE_MONAT", value);
+              readSignal(&CanMembers[cm_kessel], "SOMMERZEIT_MANUELL_ENDE_MONAT");
+          }
+
+  - id: set_KESSEL_LUEFTERREGELUNG
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received LUEFTERREGELUNG command: %s", x.c_str());
+          publishWritableSelectDiscoveryByName("LUEFTERREGELUNG", cm_kessel);
+          const char* value = writableSelectCanValue("LUEFTERREGELUNG", cm_kessel, x.c_str());
+          if (value == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid LUEFTERREGELUNG option: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "LUEFTERREGELUNG", value);
+              readSignal(&CanMembers[cm_kessel], "LUEFTERREGELUNG");
+          }
+
+  - id: set_KESSEL_PASSIVKUEHLUNG
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received PASSIVKUEHLUNG command: %s", x.c_str());
+          publishWritableSelectDiscoveryByName("PASSIVKUEHLUNG", cm_kessel);
+          const char* value = writableSelectCanValue("PASSIVKUEHLUNG", cm_kessel, x.c_str());
+          if (value == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid PASSIVKUEHLUNG option: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "PASSIVKUEHLUNG", value);
+              readSignal(&CanMembers[cm_kessel], "PASSIVKUEHLUNG");
+          }
+
+  - id: set_KESSEL_LUEFTEN
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received LUEFTEN command: %s", x.c_str());
+          publishWritableSelectDiscoveryByName("LUEFTEN", cm_kessel);
+          const char* value = writableSelectCanValue("LUEFTEN", cm_kessel, x.c_str());
+          if (value == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid LUEFTEN option: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "LUEFTEN", value);
+              readSignal(&CanMembers[cm_kessel], "LUEFTEN");
+          }
+
+  - id: set_KESSEL_STELLVENTIL_HEIZUNG_MANUELL
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received STELLVENTIL_HEIZUNG_MANUELL command: %s", x.c_str());
+          publishWritableSwitchDiscoveryByName("STELLVENTIL_HEIZUNG_MANUELL", cm_kessel);
+          const char* canValue = nullptr;
+          writableSwitchCanSignal("STELLVENTIL_HEIZUNG_MANUELL", cm_kessel, x.c_str(), canValue);
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid STELLVENTIL_HEIZUNG_MANUELL payload: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "STELLVENTIL_HEIZUNG_MANUELL", canValue);
+              readSignal(&CanMembers[cm_kessel], "STELLVENTIL_HEIZUNG_MANUELL");
+          }
+
+  - id: set_KESSEL_STELLVENTIL_WARMWASSER_MANUELL
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received STELLVENTIL_WARMWASSER_MANUELL command: %s", x.c_str());
+          publishWritableSwitchDiscoveryByName("STELLVENTIL_WARMWASSER_MANUELL", cm_kessel);
+          const char* canValue = nullptr;
+          writableSwitchCanSignal("STELLVENTIL_WARMWASSER_MANUELL", cm_kessel, x.c_str(), canValue);
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid STELLVENTIL_WARMWASSER_MANUELL payload: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "STELLVENTIL_WARMWASSER_MANUELL", canValue);
+              readSignal(&CanMembers[cm_kessel], "STELLVENTIL_WARMWASSER_MANUELL");
+          }
+
+  - id: set_KESSEL_MISCHERPUMPE_MANUELL
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received MISCHERPUMPE_MANUELL command: %s", x.c_str());
+          publishWritableSwitchDiscoveryByName("MISCHERPUMPE_MANUELL", cm_kessel);
+          const char* canValue = nullptr;
+          writableSwitchCanSignal("MISCHERPUMPE_MANUELL", cm_kessel, x.c_str(), canValue);
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid MISCHERPUMPE_MANUELL payload: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "MISCHERPUMPE_MANUELL", canValue);
+              readSignal(&CanMembers[cm_kessel], "MISCHERPUMPE_MANUELL");
+          }
+
+  - id: set_KESSEL_MISCHER_AUF_MANUELL
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received MISCHER_AUF_MANUELL command: %s", x.c_str());
+          publishWritableSwitchDiscoveryByName("MISCHER_AUF_MANUELL", cm_kessel);
+          const char* canValue = nullptr;
+          writableSwitchCanSignal("MISCHER_AUF_MANUELL", cm_kessel, x.c_str(), canValue);
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid MISCHER_AUF_MANUELL payload: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "MISCHER_AUF_MANUELL", canValue);
+              readSignal(&CanMembers[cm_kessel], "MISCHER_AUF_MANUELL");
+          }
+
+  - id: set_KESSEL_MISCHER_ZU_MANUELL
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received MISCHER_ZU_MANUELL command: %s", x.c_str());
+          publishWritableSwitchDiscoveryByName("MISCHER_ZU_MANUELL", cm_kessel);
+          const char* canValue = nullptr;
+          writableSwitchCanSignal("MISCHER_ZU_MANUELL", cm_kessel, x.c_str(), canValue);
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid MISCHER_ZU_MANUELL payload: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "MISCHER_ZU_MANUELL", canValue);
+              readSignal(&CanMembers[cm_kessel], "MISCHER_ZU_MANUELL");
+          }
+
+  - id: set_KESSEL_NOTHEIZUNG_STUFE_1_MANUELL
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received NOTHEIZUNG_STUFE_1_MANUELL command: %s", x.c_str());
+          publishWritableSwitchDiscoveryByName("NOTHEIZUNG_STUFE_1_MANUELL", cm_kessel);
+          const char* canValue = nullptr;
+          writableSwitchCanSignal("NOTHEIZUNG_STUFE_1_MANUELL", cm_kessel, x.c_str(), canValue);
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid NOTHEIZUNG_STUFE_1_MANUELL payload: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "NOTHEIZUNG_STUFE_1_MANUELL", canValue);
+              readSignal(&CanMembers[cm_kessel], "NOTHEIZUNG_STUFE_1_MANUELL");
+          }
+
+  - id: set_KESSEL_NOTHEIZUNG_STUFE_2_MANUELL
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received NOTHEIZUNG_STUFE_2_MANUELL command: %s", x.c_str());
+          publishWritableSwitchDiscoveryByName("NOTHEIZUNG_STUFE_2_MANUELL", cm_kessel);
+          const char* canValue = nullptr;
+          writableSwitchCanSignal("NOTHEIZUNG_STUFE_2_MANUELL", cm_kessel, x.c_str(), canValue);
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid NOTHEIZUNG_STUFE_2_MANUELL payload: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "NOTHEIZUNG_STUFE_1_MANUELL", canValue);
+              readSignal(&CanMembers[cm_kessel], "NOTHEIZUNG_STUFE_1_MANUELL");
+          }
+
+  - id: set_KESSEL_NOTHEIZUNG_STUFE_3_MANUELL
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received NOTHEIZUNG_STUFE_3_MANUELL command: %s", x.c_str());
+          publishWritableSwitchDiscoveryByName("NOTHEIZUNG_STUFE_3_MANUELL", cm_kessel);
+          const char* canValue = nullptr;
+          writableSwitchCanSignal("NOTHEIZUNG_STUFE_3_MANUELL", cm_kessel, x.c_str(), canValue);
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid NOTHEIZUNG_STUFE_3_MANUELL payload: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "NOTHEIZUNG_STUFE_1_MANUELL", canValue);
+              readSignal(&CanMembers[cm_kessel], "NOTHEIZUNG_STUFE_1_MANUELL");
+          }
+
+  - id: set_KESSEL_UMSCHALTVENTIL_MANUELL
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received UMSCHALTVENTIL_MANUELL command: %s", x.c_str());
+          publishWritableSwitchDiscoveryByName("UMSCHALTVENTIL_MANUELL", cm_kessel);
+          const char* canValue = nullptr;
+          writableSwitchCanSignal("UMSCHALTVENTIL_MANUELL", cm_kessel, x.c_str(), canValue);
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid UMSCHALTVENTIL_MANUELL payload: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "UMSCHALTVENTIL_MANUELL", canValue);
+              readSignal(&CanMembers[cm_kessel], "UMSCHALTVENTIL_MANUELL");
+          }
+
+  - id: set_KESSEL_VERDICHTER_MANUELL
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received VERDICHTER_MANUELL command: %s", x.c_str());
+          publishWritableSwitchDiscoveryByName("VERDICHTER_MANUELL", cm_kessel);
+          const char* canValue = nullptr;
+          writableSwitchCanSignal("VERDICHTER_MANUELL", cm_kessel, x.c_str(), canValue);
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid VERDICHTER_MANUELL payload: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "VERDICHTER_MANUELL", canValue);
+              readSignal(&CanMembers[cm_kessel], "VERDICHTER_MANUELL");
+          }
+
+  - id: set_KESSEL_DREHZAHL_ABLUEFTER_MANUELL
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received DREHZAHL_ABLUEFTER_MANUELL command: %s", x.c_str());
+          publishWritableSwitchDiscoveryByName("DREHZAHL_ABLUEFTER_MANUELL", cm_kessel);
+          const char* canValue = nullptr;
+          writableSwitchCanSignal("DREHZAHL_ABLUEFTER_MANUELL", cm_kessel, x.c_str(), canValue);
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid DREHZAHL_ABLUEFTER_MANUELL payload: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "DREHZAHL_ABLUEFTER_MANUELL", canValue);
+              readSignal(&CanMembers[cm_kessel], "DREHZAHL_ABLUEFTER_MANUELL");
+          }
+
+  - id: set_KESSEL_DREHZAHL_ZULUEFTER_MANUELL
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received DREHZAHL_ZULUEFTER_MANUELL command: %s", x.c_str());
+          publishWritableSwitchDiscoveryByName("DREHZAHL_ZULUEFTER_MANUELL", cm_kessel);
+          const char* canValue = nullptr;
+          writableSwitchCanSignal("DREHZAHL_ZULUEFTER_MANUELL", cm_kessel, x.c_str(), canValue);
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid DREHZAHL_ZULUEFTER_MANUELL payload: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "DREHZAHL_ZULUEFTER_MANUELL", canValue);
+              readSignal(&CanMembers[cm_kessel], "DREHZAHL_ZULUEFTER_MANUELL");
+          }
+
+  - id: set_KESSEL_FENSTER_AUF_MANUELL
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received FENSTER_AUF_MANUELL command: %s", x.c_str());
+          publishWritableSwitchDiscoveryByName("FENSTER_AUF_MANUELL", cm_kessel);
+          const char* canValue = nullptr;
+          writableSwitchCanSignal("FENSTER_AUF_MANUELL", cm_kessel, x.c_str(), canValue);
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid FENSTER_AUF_MANUELL payload: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "FENSTER_AUF_MANUELL", canValue);
+              readSignal(&CanMembers[cm_kessel], "FENSTER_AUF_MANUELL");
+          }
+
+  - id: set_KESSEL_WW_PUFFERBETRIEB
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received WW_PUFFERBETRIEB command: %s", x.c_str());
+          publishWritableSwitchDiscoveryByName("WW_PUFFERBETRIEB", cm_kessel);
+          const char* canValue = nullptr;
+          writableSwitchCanSignal("WW_PUFFERBETRIEB", cm_kessel, x.c_str(), canValue);
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid WW_PUFFERBETRIEB payload: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "WW_PUFFERBETRIEB", canValue);
+              readSignal(&CanMembers[cm_kessel], "WW_PUFFERBETRIEB");
+          }
+
+  - id: set_KESSEL_WW_ECO_BETRIEB
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received WW_ECO_BETRIEB command: %s", x.c_str());
+          publishWritableSwitchDiscoveryByName("WW_ECO_BETRIEB", cm_kessel);
+          const char* canValue = nullptr;
+          writableSwitchCanSignal("WW_ECO_BETRIEB", cm_kessel, x.c_str(), canValue);
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid WW_ECO_BETRIEB payload: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "WW_ECO_BETRIEB", canValue);
+              readSignal(&CanMembers[cm_kessel], "WW_ECO_BETRIEB");
+          }
+
+  - id: set_KESSEL_INTEGRALSENSOR
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received INTEGRALSENSOR command: %s", x.c_str());
+          publishWritableSwitchDiscoveryByName("INTEGRALSENSOR", cm_kessel);
+          const char* canValue = nullptr;
+          writableSwitchCanSignal("INTEGRALSENSOR", cm_kessel, x.c_str(), canValue);
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid INTEGRALSENSOR payload: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "INTEGRALSENSOR", canValue);
+              readSignal(&CanMembers[cm_kessel], "INTEGRALSENSOR");
+          }
+
+  - id: set_KESSEL_ZWEITER_WW_SPEICHER
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZWEITER_WW_SPEICHER command: %s", x.c_str());
+          publishWritableSwitchDiscoveryByName("ZWEITER_WW_SPEICHER", cm_kessel);
+          const char* canValue = nullptr;
+          writableSwitchCanSignal("ZWEITER_WW_SPEICHER", cm_kessel, x.c_str(), canValue);
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid ZWEITER_WW_SPEICHER payload: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "ZWEITER_WW_SPEICHER", canValue);
+              readSignal(&CanMembers[cm_kessel], "ZWEITER_WW_SPEICHER");
+          }
+
+  - id: set_KESSEL_SOMMERZEIT_AUTOMATIK
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received SOMMERZEIT_AUTOMATIK command: %s", x.c_str());
+          publishWritableSwitchDiscoveryByName("SOMMERZEIT_AUTOMATIK", cm_kessel);
+          const char* canValue = nullptr;
+          writableSwitchCanSignal("SOMMERZEIT_AUTOMATIK", cm_kessel, x.c_str(), canValue);
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid SOMMERZEIT_AUTOMATIK payload: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "SOMMERZEIT_AUTOMATIK", canValue);
+              readSignal(&CanMembers[cm_kessel], "SOMMERZEIT_AUTOMATIK");
+          }
+
+  - id: set_KESSEL_NOTBETRIEB_AUTO
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received NOTBETRIEB_AUTO command: %s", x.c_str());
+          publishWritableSwitchDiscoveryByName("NOTBETRIEB_AUTO", cm_kessel);
+          const char* canValue = nullptr;
+          writableSwitchCanSignal("NOTBETRIEB_AUTO", cm_kessel, x.c_str(), canValue);
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid NOTBETRIEB_AUTO payload: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "NOTBETRIEB_AUTO", canValue);
+              readSignal(&CanMembers[cm_kessel], "NOTBETRIEB_AUTO");
+          }
+
+  - id: set_KESSEL_PASSIVKUEHLUNG_FORTLUFT
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received PASSIVKUEHLUNG_FORTLUFT command: %s", x.c_str());
+          publishWritableSwitchDiscoveryByName("PASSIVKUEHLUNG_FORTLUFT", cm_kessel);
+          const char* canValue = nullptr;
+          writableSwitchCanSignal("PASSIVKUEHLUNG_FORTLUFT", cm_kessel, x.c_str(), canValue);
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid PASSIVKUEHLUNG_FORTLUFT payload: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "PASSIVKUEHLUNG_FORTLUFT", canValue);
+              readSignal(&CanMembers[cm_kessel], "PASSIVKUEHLUNG_FORTLUFT");
+          }
+
+  - id: set_KESSEL_LUFTSTOP_SOMMER_WW
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received LUFTSTOP_SOMMER_WW command: %s", x.c_str());
+          publishWritableSwitchDiscoveryByName("LUFTSTOP_SOMMER_WW", cm_kessel);
+          const char* canValue = nullptr;
+          writableSwitchCanSignal("LUFTSTOP_SOMMER_WW", cm_kessel, x.c_str(), canValue);
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid LUFTSTOP_SOMMER_WW payload: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "LUFTSTOP_SOMMER_WW", canValue);
+              readSignal(&CanMembers[cm_kessel], "LUFTSTOP_SOMMER_WW");
+          }
+
+  - id: set_KESSEL_FEUCHTEREGELUNG_EIN_AUS
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received FEUCHTEREGELUNG_EIN_AUS command: %s", x.c_str());
+          publishWritableSwitchDiscoveryByName("FEUCHTEREGELUNG_EIN_AUS", cm_kessel);
+          const char* canValue = nullptr;
+          writableSwitchCanSignal("FEUCHTEREGELUNG_EIN_AUS", cm_kessel, x.c_str(), canValue);
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid FEUCHTEREGELUNG_EIN_AUS payload: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "FEUCHTEREGELUNG_EIN_AUS", canValue);
+              readSignal(&CanMembers[cm_kessel], "FEUCHTEREGELUNG_EIN_AUS");
+          }
+
+  - id: set_KESSEL_LUEFTUNG_FREIGABE
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received LUEFTUNG_FREIGABE command: %s", x.c_str());
+          publishWritableSwitchDiscoveryByName("LUEFTUNG_FREIGABE", cm_kessel);
+          const char* canValue = nullptr;
+          writableSwitchCanSignal("LUEFTUNG_FREIGABE", cm_kessel, x.c_str(), canValue);
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid LUEFTUNG_FREIGABE payload: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "LUEFTUNG_FREIGABE", canValue);
+              readSignal(&CanMembers[cm_kessel], "LUEFTUNG_FREIGABE");
+          }
+
+  - id: set_KESSEL_ESTRICHFUNKTION
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ESTRICHFUNKTION command: %s", x.c_str());
+          publishWritableSwitchDiscoveryByName("ESTRICHFUNKTION", cm_kessel);
+          const char* canValue = nullptr;
+          writableSwitchCanSignal("ESTRICHFUNKTION", cm_kessel, x.c_str(), canValue);
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid ESTRICHFUNKTION payload: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "ESTRICHFUNKTION", canValue);
+              readSignal(&CanMembers[cm_kessel], "ESTRICHFUNKTION");
+          }
+
+  - id: set_KESSEL_LUEFTER_FILTER_RESET
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received LUEFTER_FILTER_RESET button press: %s", x.c_str());
+          publishWritableButtonDiscoveryByName("LUEFTER_FILTER_RESET", cm_kessel);
+          const char* canValue = writableButtonCanValue("LUEFTER_FILTER_RESET", cm_kessel, x.c_str());
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid LUEFTER_FILTER_RESET payload: %s", x.c_str());
+          } else {
+              writeSignalNoAck(&CanMembers[cm_kessel], "LUEFTER_FILTER_RESET", canValue);
+          }
+
+  - id: set_KESSEL_FEHLERSPEICHER_LOESCHEN
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received FEHLERSPEICHER_LOESCHEN button press: %s", x.c_str());
+          publishWritableButtonDiscoveryByName("FEHLERSPEICHER_LOESCHEN", cm_kessel);
+          const char* canValue = writableButtonCanValue("FEHLERSPEICHER_LOESCHEN", cm_kessel, x.c_str());
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid FEHLERSPEICHER_LOESCHEN payload: %s", x.c_str());
+          } else {
+              writeSignalNoAck(&CanMembers[cm_kessel], "FEHLERSPEICHER_LOESCHEN", canValue);
+          }
+
+  - id: set_KESSEL_RESET_REGLER
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received RESET_REGLER button press: %s", x.c_str());
+          publishWritableButtonDiscoveryByName("RESET_REGLER", cm_kessel);
+          const char* canValue = writableButtonCanValue("RESET_REGLER", cm_kessel, x.c_str());
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid RESET_REGLER payload: %s", x.c_str());
+          } else {
+              writeSignalNoAck(&CanMembers[cm_kessel], "RESET_REGLER", canValue);
+          }
+
+  - id: set_KESSEL_WERKSEINSTELLUNG
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received WERKSEINSTELLUNG button press: %s", x.c_str());
+          publishWritableButtonDiscoveryByName("WERKSEINSTELLUNG", cm_kessel);
+          const char* canValue = writableButtonCanValue("WERKSEINSTELLUNG", cm_kessel, x.c_str());
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid WERKSEINSTELLUNG payload: %s", x.c_str());
+          } else {
+              writeSignalNoAck(&CanMembers[cm_kessel], "WERKSEINSTELLUNG", canValue);
+          }
+
+  - id: set_KESSEL_ANTILEGIONELLEN_ZEIT
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ANTILEGIONELLEN_ZEIT command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ANTILEGIONELLEN_ZEIT", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ANTILEGIONELLEN_ZEIT", value);
+          readSignal(&CanMembers[cm_kessel], "ANTILEGIONELLEN_ZEIT");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_MO_SO
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_MO_SO command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_MO_SO", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_MO_SO", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_MO_SO");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_MO_SO_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_MO_SO_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_MO_SO_SCHALT_2", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_MO_SO_SCHALT_2", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_MO_SO_SCHALT_2");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_MO_SO_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_MO_SO_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_MO_SO_SCHALT_3", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_MO_SO_SCHALT_3", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_MO_SO_SCHALT_3");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_MO
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_MO command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_MO", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_MO", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_MO");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_MO_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_MO_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_MO_SCHALT_2", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_MO_SCHALT_2", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_MO_SCHALT_2");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_MO_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_MO_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_MO_SCHALT_3", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_MO_SCHALT_3", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_MO_SCHALT_3");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_DI
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_DI command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_DI", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_DI", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_DI");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_DI_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_DI_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_DI_SCHALT_2", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_DI_SCHALT_2", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_DI_SCHALT_2");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_DI_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_DI_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_DI_SCHALT_3", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_DI_SCHALT_3", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_DI_SCHALT_3");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_MI
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_MI command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_MI", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_MI", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_MI");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_MI_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_MI_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_MI_SCHALT_2", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_MI_SCHALT_2", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_MI_SCHALT_2");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_MI_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_MI_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_MI_SCHALT_3", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_MI_SCHALT_3", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_MI_SCHALT_3");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_DO
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_DO command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_DO", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_DO", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_DO");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_DO_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_DO_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_DO_SCHALT_2", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_DO_SCHALT_2", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_DO_SCHALT_2");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_DO_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_DO_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_DO_SCHALT_3", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_DO_SCHALT_3", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_DO_SCHALT_3");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_FR
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_FR command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_FR", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_FR", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_FR");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_FR_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_FR_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_FR_SCHALT_2", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_FR_SCHALT_2", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_FR_SCHALT_2");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_FR_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_FR_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_FR_SCHALT_3", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_FR_SCHALT_3", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_FR_SCHALT_3");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_SA
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_SA command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_SA", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_SA", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_SA");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_SA_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_SA_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_SA_SCHALT_2", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_SA_SCHALT_2", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_SA_SCHALT_2");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_SA_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_SA_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_SA_SCHALT_3", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_SA_SCHALT_3", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_SA_SCHALT_3");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_SO
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_SO command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_SO", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_SO", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_SO");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_SO_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_SO_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_SO_SCHALT_2", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_SO_SCHALT_2", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_SO_SCHALT_2");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_SO_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_SO_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_SO_SCHALT_3", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_SO_SCHALT_3", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_SO_SCHALT_3");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_MO_FR
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_MO_FR command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_MO_FR", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_MO_FR", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_MO_FR");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_MO_FR_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_MO_FR_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_MO_FR_SCHALT_2", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_MO_FR_SCHALT_2", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_MO_FR_SCHALT_2");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_MO_FR_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_MO_FR_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_MO_FR_SCHALT_3", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_MO_FR_SCHALT_3", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_MO_FR_SCHALT_3");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_SA_SO
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_SA_SO command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_SA_SO", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_SA_SO", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_SA_SO");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_SA_SO_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_SA_SO_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_SA_SO_SCHALT_2", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_SA_SO_SCHALT_2", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_SA_SO_SCHALT_2");
+
+  - id: set_BEDIENMODUL_2_HEIZPROG_1_SA_SO_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HEIZPROG_1_SA_SO_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("HEIZPROG_1_SA_SO_SCHALT_3", cm_bedienmodul_2);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_SA_SO_SCHALT_3", value);
+          readSignal(&CanMembers[cm_bedienmodul_2], "HEIZPROG_1_SA_SO_SCHALT_3");
+
+  - id: set_KESSEL_W_WASSERPROG_1_MO_SO
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_MO_SO command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_MO_SO", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_MO_SO", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_MO_SO");
+
+  - id: set_KESSEL_W_WASSERPROG_1_MO_SO_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_MO_SO_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_MO_SO_SCHALT_2", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_MO_SO_SCHALT_2", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_MO_SO_SCHALT_2");
+
+  - id: set_KESSEL_W_WASSERPROG_1_MO_SO_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_MO_SO_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_MO_SO_SCHALT_3", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_MO_SO_SCHALT_3", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_MO_SO_SCHALT_3");
+
+  - id: set_KESSEL_W_WASSERPROG_1_MO
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_MO command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_MO", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_MO", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_MO");
+
+  - id: set_KESSEL_W_WASSERPROG_1_MO_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_MO_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_MO_SCHALT_2", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_MO_SCHALT_2", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_MO_SCHALT_2");
+
+  - id: set_KESSEL_W_WASSERPROG_1_MO_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_MO_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_MO_SCHALT_3", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_MO_SCHALT_3", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_MO_SCHALT_3");
+
+  - id: set_KESSEL_W_WASSERPROG_1_DI
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_DI command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_DI", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_DI", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_DI");
+
+  - id: set_KESSEL_W_WASSERPROG_1_DI_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_DI_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_DI_SCHALT_2", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_DI_SCHALT_2", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_DI_SCHALT_2");
+
+  - id: set_KESSEL_W_WASSERPROG_1_DI_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_DI_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_DI_SCHALT_3", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_DI_SCHALT_3", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_DI_SCHALT_3");
+
+  - id: set_KESSEL_W_WASSERPROG_1_MI
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_MI command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_MI", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_MI", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_MI");
+
+  - id: set_KESSEL_W_WASSERPROG_1_MI_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_MI_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_MI_SCHALT_2", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_MI_SCHALT_2", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_MI_SCHALT_2");
+
+  - id: set_KESSEL_W_WASSERPROG_1_MI_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_MI_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_MI_SCHALT_3", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_MI_SCHALT_3", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_MI_SCHALT_3");
+
+  - id: set_KESSEL_W_WASSERPROG_1_DO
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_DO command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_DO", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_DO", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_DO");
+
+  - id: set_KESSEL_W_WASSERPROG_1_DO_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_DO_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_DO_SCHALT_2", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_DO_SCHALT_2", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_DO_SCHALT_2");
+
+  - id: set_KESSEL_W_WASSERPROG_1_DO_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_DO_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_DO_SCHALT_3", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_DO_SCHALT_3", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_DO_SCHALT_3");
+
+  - id: set_KESSEL_W_WASSERPROG_1_FR
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_FR command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_FR", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_FR", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_FR");
+
+  - id: set_KESSEL_W_WASSERPROG_1_FR_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_FR_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_FR_SCHALT_2", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_FR_SCHALT_2", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_FR_SCHALT_2");
+
+  - id: set_KESSEL_W_WASSERPROG_1_FR_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_FR_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_FR_SCHALT_3", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_FR_SCHALT_3", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_FR_SCHALT_3");
+
+  - id: set_KESSEL_W_WASSERPROG_1_SA
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_SA command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_SA", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_SA", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_SA");
+
+  - id: set_KESSEL_W_WASSERPROG_1_SA_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_SA_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_SA_SCHALT_2", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_SA_SCHALT_2", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_SA_SCHALT_2");
+
+  - id: set_KESSEL_W_WASSERPROG_1_SA_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_SA_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_SA_SCHALT_3", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_SA_SCHALT_3", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_SA_SCHALT_3");
+
+  - id: set_KESSEL_W_WASSERPROG_1_SO
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_SO command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_SO", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_SO", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_SO");
+
+  - id: set_KESSEL_W_WASSERPROG_1_SO_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_SO_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_SO_SCHALT_2", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_SO_SCHALT_2", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_SO_SCHALT_2");
+
+  - id: set_KESSEL_W_WASSERPROG_1_SO_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_SO_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_SO_SCHALT_3", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_SO_SCHALT_3", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_SO_SCHALT_3");
+
+  - id: set_KESSEL_W_WASSERPROG_1_MO_FR
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_MO_FR command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_MO_FR", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_MO_FR", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_MO_FR");
+
+  - id: set_KESSEL_W_WASSERPROG_1_MO_FR_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_MO_FR_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_MO_FR_SCHALT_2", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_MO_FR_SCHALT_2", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_MO_FR_SCHALT_2");
+
+  - id: set_KESSEL_W_WASSERPROG_1_MO_FR_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_MO_FR_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_MO_FR_SCHALT_3", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_MO_FR_SCHALT_3", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_MO_FR_SCHALT_3");
+
+  - id: set_KESSEL_W_WASSERPROG_1_SA_SO
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_SA_SO command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_SA_SO", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_SA_SO", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_SA_SO");
+
+  - id: set_KESSEL_W_WASSERPROG_1_SA_SO_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_SA_SO_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_SA_SO_SCHALT_2", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_SA_SO_SCHALT_2", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_SA_SO_SCHALT_2");
+
+  - id: set_KESSEL_W_WASSERPROG_1_SA_SO_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received W_WASSERPROG_1_SA_SO_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("W_WASSERPROG_1_SA_SO_SCHALT_3", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_SA_SO_SCHALT_3", value);
+          readSignal(&CanMembers[cm_kessel], "W_WASSERPROG_1_SA_SO_SCHALT_3");
+
+  - id: set_KESSEL_ZBV_PROG_1_MO_SO
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_MO_SO command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_MO_SO", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_MO_SO", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_MO_SO");
+
+  - id: set_KESSEL_ZBV_PROG_1_MO_SO_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_MO_SO_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_MO_SO_SCHALT_2", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_MO_SO_SCHALT_2", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_MO_SO_SCHALT_2");
+
+  - id: set_KESSEL_ZBV_PROG_1_MO_SO_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_MO_SO_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_MO_SO_SCHALT_3", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_MO_SO_SCHALT_3", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_MO_SO_SCHALT_3");
+
+  - id: set_KESSEL_ZBV_PROG_1_MO
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_MO command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_MO", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_MO", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_MO");
+
+  - id: set_KESSEL_ZBV_PROG_1_MO_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_MO_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_MO_SCHALT_2", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_MO_SCHALT_2", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_MO_SCHALT_2");
+
+  - id: set_KESSEL_ZBV_PROG_1_MO_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_MO_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_MO_SCHALT_3", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_MO_SCHALT_3", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_MO_SCHALT_3");
+
+  - id: set_KESSEL_ZBV_PROG_1_DI
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_DI command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_DI", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_DI", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_DI");
+
+  - id: set_KESSEL_ZBV_PROG_1_DI_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_DI_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_DI_SCHALT_2", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_DI_SCHALT_2", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_DI_SCHALT_2");
+
+  - id: set_KESSEL_ZBV_PROG_1_DI_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_DI_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_DI_SCHALT_3", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_DI_SCHALT_3", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_DI_SCHALT_3");
+
+  - id: set_KESSEL_ZBV_PROG_1_MI
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_MI command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_MI", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_MI", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_MI");
+
+  - id: set_KESSEL_ZBV_PROG_1_MI_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_MI_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_MI_SCHALT_2", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_MI_SCHALT_2", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_MI_SCHALT_2");
+
+  - id: set_KESSEL_ZBV_PROG_1_MI_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_MI_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_MI_SCHALT_3", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_MI_SCHALT_3", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_MI_SCHALT_3");
+
+  - id: set_KESSEL_ZBV_PROG_1_DO
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_DO command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_DO", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_DO", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_DO");
+
+  - id: set_KESSEL_ZBV_PROG_1_DO_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_DO_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_DO_SCHALT_2", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_DO_SCHALT_2", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_DO_SCHALT_2");
+
+  - id: set_KESSEL_ZBV_PROG_1_DO_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_DO_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_DO_SCHALT_3", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_DO_SCHALT_3", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_DO_SCHALT_3");
+
+  - id: set_KESSEL_ZBV_PROG_1_FR
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_FR command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_FR", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_FR", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_FR");
+
+  - id: set_KESSEL_ZBV_PROG_1_FR_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_FR_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_FR_SCHALT_2", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_FR_SCHALT_2", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_FR_SCHALT_2");
+
+  - id: set_KESSEL_ZBV_PROG_1_FR_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_FR_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_FR_SCHALT_3", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_FR_SCHALT_3", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_FR_SCHALT_3");
+
+  - id: set_KESSEL_ZBV_PROG_1_SA
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_SA command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_SA", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_SA", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_SA");
+
+  - id: set_KESSEL_ZBV_PROG_1_SA_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_SA_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_SA_SCHALT_2", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_SA_SCHALT_2", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_SA_SCHALT_2");
+
+  - id: set_KESSEL_ZBV_PROG_1_SA_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_SA_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_SA_SCHALT_3", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_SA_SCHALT_3", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_SA_SCHALT_3");
+
+  - id: set_KESSEL_ZBV_PROG_1_SO
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_SO command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_SO", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_SO", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_SO");
+
+  - id: set_KESSEL_ZBV_PROG_1_SO_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_SO_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_SO_SCHALT_2", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_SO_SCHALT_2", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_SO_SCHALT_2");
+
+  - id: set_KESSEL_ZBV_PROG_1_SO_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_SO_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_SO_SCHALT_3", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_SO_SCHALT_3", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_SO_SCHALT_3");
+
+  - id: set_KESSEL_ZBV_PROG_1_MO_FR
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_MO_FR command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_MO_FR", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_MO_FR", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_MO_FR");
+
+  - id: set_KESSEL_ZBV_PROG_1_MO_FR_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_MO_FR_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_MO_FR_SCHALT_2", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_MO_FR_SCHALT_2", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_MO_FR_SCHALT_2");
+
+  - id: set_KESSEL_ZBV_PROG_1_MO_FR_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_MO_FR_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_MO_FR_SCHALT_3", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_MO_FR_SCHALT_3", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_MO_FR_SCHALT_3");
+
+  - id: set_KESSEL_ZBV_PROG_1_SA_SO
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_SA_SO command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_SA_SO", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_SA_SO", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_SA_SO");
+
+  - id: set_KESSEL_ZBV_PROG_1_SA_SO_SCHALT_2
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_SA_SO_SCHALT_2 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_SA_SO_SCHALT_2", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_SA_SO_SCHALT_2", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_SA_SO_SCHALT_2");
+
+  - id: set_KESSEL_ZBV_PROG_1_SA_SO_SCHALT_3
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received ZBV_PROG_1_SA_SO_SCHALT_3 command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("ZBV_PROG_1_SA_SO_SCHALT_3", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_SA_SO_SCHALT_3", value);
+          readSignal(&CanMembers[cm_kessel], "ZBV_PROG_1_SA_SO_SCHALT_3");
+
+  - id: set_KESSEL_FERIEN_BEGINN_ZEIT
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received FERIEN_BEGINN_ZEIT command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("FERIEN_BEGINN_ZEIT", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "FERIEN_BEGINN_ZEIT", value);
+          readSignal(&CanMembers[cm_kessel], "FERIEN_BEGINN_ZEIT");
+
+  - id: set_KESSEL_FERIEN_ENDE_ZEIT
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received FERIEN_ENDE_ZEIT command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("FERIEN_ENDE_ZEIT", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "FERIEN_ENDE_ZEIT", value);
+          readSignal(&CanMembers[cm_kessel], "FERIEN_ENDE_ZEIT");
+
+  - id: set_KESSEL_PARTYPROGRAMM_START
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received PARTYPROGRAMM_START command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("PARTYPROGRAMM_START", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "PARTYPROGRAMM_START", value);
+          readSignal(&CanMembers[cm_kessel], "PARTYPROGRAMM_START");
+
+  - id: set_KESSEL_PARTYPROGRAMM_ENDE
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received PARTYPROGRAMM_ENDE command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("PARTYPROGRAMM_ENDE", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "PARTYPROGRAMM_ENDE", value);
+          readSignal(&CanMembers[cm_kessel], "PARTYPROGRAMM_ENDE");
+
+  - id: set_KESSEL_KOLLEKTORSCHUTZ
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received KOLLEKTORSCHUTZ command: %s", x.c_str());
+          publishWritableSwitchDiscoveryByName("KOLLEKTORSCHUTZ", cm_kessel);
+          const char* canValue = nullptr;
+          writableSwitchCanSignal("KOLLEKTORSCHUTZ", cm_kessel, x.c_str(), canValue);
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid KOLLEKTORSCHUTZ payload: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "KOLLEKTORSCHUTZ", canValue);
+              readSignal(&CanMembers[cm_kessel], "KOLLEKTORSCHUTZ");
+          }
+
+  - id: set_KESSEL_KOLLEKTORGRENZTEMPERATUR
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received KOLLEKTORGRENZTEMPERATUR command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("KOLLEKTORGRENZTEMPERATUR", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "KOLLEKTORGRENZTEMPERATUR", value);
+          readSignal(&CanMembers[cm_kessel], "KOLLEKTORGRENZTEMPERATUR");
+
+  - id: set_KESSEL_KOLLEKTORSPERRTEMPERATUR
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received KOLLEKTORSPERRTEMPERATUR command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("KOLLEKTORSPERRTEMPERATUR", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "KOLLEKTORSPERRTEMPERATUR", value);
+          readSignal(&CanMembers[cm_kessel], "KOLLEKTORSPERRTEMPERATUR");
+
+  - id: set_KESSEL_KOLLEKTORSCHUTZTEMPERATUR
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received KOLLEKTORSCHUTZTEMPERATUR command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("KOLLEKTORSCHUTZTEMPERATUR", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "KOLLEKTORSCHUTZTEMPERATUR", value);
+          readSignal(&CanMembers[cm_kessel], "KOLLEKTORSCHUTZTEMPERATUR");
+
+  - id: set_KESSEL_FREIGABE_SOLAR
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received FREIGABE_SOLAR command: %s", x.c_str());
+          publishWritableSwitchDiscoveryByName("FREIGABE_SOLAR", cm_kessel);
+          const char* canValue = nullptr;
+          writableSwitchCanSignal("FREIGABE_SOLAR", cm_kessel, x.c_str(), canValue);
+          if (canValue == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid FREIGABE_SOLAR payload: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "FREIGABE_SOLAR", canValue);
+              readSignal(&CanMembers[cm_kessel], "FREIGABE_SOLAR");
+          }
+
+  - id: set_KESSEL_VERZOEGERUNG_VERDICHTER_WARMWASSER
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received VERZOEGERUNG_VERDICHTER_WARMWASSER command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("VERZOEGERUNG_VERDICHTER_WARMWASSER", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "VERZOEGERUNG_VERDICHTER_WARMWASSER", value);
+          readSignal(&CanMembers[cm_kessel], "VERZOEGERUNG_VERDICHTER_WARMWASSER");
+
+  - id: set_KESSEL_HYSTERESE_SOLAR
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received HYSTERESE_SOLAR command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("HYSTERESE_SOLAR", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "HYSTERESE_SOLAR", value);
+          readSignal(&CanMembers[cm_kessel], "HYSTERESE_SOLAR");
+
+  - id: set_KESSEL_SOLAR_WARMWASSER_TEMPERATUR
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received SOLAR_WARMWASSER_TEMPERATUR command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("SOLAR_WARMWASSER_TEMPERATUR", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "SOLAR_WARMWASSER_TEMPERATUR", value);
+          readSignal(&CanMembers[cm_kessel], "SOLAR_WARMWASSER_TEMPERATUR");
+
+  - id: set_KESSEL_VORRANG_SOLAR
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received VORRANG_SOLAR command: %s", x.c_str());
+          publishWritableSelectDiscoveryByName("VORRANG_SOLAR", cm_kessel);
+          const char* value = writableSelectCanValue("VORRANG_SOLAR", cm_kessel, x.c_str());
+          if (value == nullptr) {
+              ESP_LOGW("MQTT_CMD", "Invalid VORRANG_SOLAR option: %s", x.c_str());
+          } else {
+              writeSignal(&CanMembers[cm_kessel], "VORRANG_SOLAR", value);
+              readSignal(&CanMembers[cm_kessel], "VORRANG_SOLAR");
+          }
+
+  - id: set_KESSEL_KUEHLZEIT
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received KUEHLZEIT command: %s", x.c_str());
+          publishWritableTextDiscoveryByName("KUEHLZEIT", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "KUEHLZEIT", value);
+          readSignal(&CanMembers[cm_kessel], "KUEHLZEIT");
+
+  - id: set_KESSEL_LEISTUNG_KUEHLEN
+    mode: queued
+    parameters:
+      x: string
+    then:
+      - lambda: |-
+          ESP_LOGI("MQTT_CMD", "Received LEISTUNG_KUEHLEN command: %s", x.c_str());
+          publishWritableNumberDiscoveryByName("LEISTUNG_KUEHLEN", cm_kessel);
+          const char* value = x.c_str();
+          writeSignal(&CanMembers[cm_kessel], "LEISTUNG_KUEHLEN", value);
+          readSignal(&CanMembers[cm_kessel], "LEISTUNG_KUEHLEN");
 
 #########################################
 #                                       #
@@ -314,25 +3617,30 @@ mqtt:
 #                                       #
 #########################################
 interval:
-  # Process signal requests based on request table (runs every second)
-  - interval: 1s
+  # Process signal requests based on request table (runs every 250 ms, max. MAX_REQUESTS_PER_ITERATION request each)
+  - interval: 250ms
     then:
       - lambda: |-
           processSignalRequests();
+          runSignalProbe();
 
   # Process calculated sensor updates (runs every second)
   - interval: 1s
     then:
       - lambda: |-
+          runWritableDiscoveryPump();
           processCalculatedSensors();
+          if (selfHealRebootRequested()) {
+            ESP_LOGE("SELF_HEAL", "Rebooting (self healing)");
+            App.safe_reboot();
+          }
 
   # Republish MQTT discovery every 15 minutes for reliability
   - interval: 15min
     then:
       - lambda: |-
           republishAllDiscoveries();
-          publishAllWritableNumberDiscoveries(true);
-          publishAllWritableSelectDiscoveries(true);
+          startWritableDiscoveryPump(true);
 
 #########################################
 #                                       #
@@ -340,20 +3648,10 @@ interval:
 #                                       #
 #########################################
 text_sensor:
-  #########################################
-  #                                       #
-  #   HOME ASSISTANT TEXT SENSOREN        #
-  #                                       #
-  #########################################
-  - platform: homeassistant
-    name: "Wärmepumpe Datum Setpoint"
-    id: warmepumpe_datum
-    entity_id: input_datetime.heatingpump_date
-
-  - platform: homeassistant
-    name: "Wärmepumpe Uhrzeit Setpoint"
-    id: warmepumpe_uhrzeit
-    entity_id: input_datetime.heatingpump_time
+  # ESPHome version + build time: shows at a glance which firmware really runs (OTA rollback!)
+  - platform: version
+    name: "Firmware Build"
+    entity_category: diagnostic
 
   #########################################
   #                                       #
@@ -398,6 +3696,7 @@ text_sensor:
 #                                       #
 #########################################
 button:
+  # Set the heat pump clock / date to the ESP's SNTP time
   - platform: template
     name: "Update Uhrzeit"
     id: update_uhrzeit
@@ -405,7 +3704,7 @@ button:
     on_press:
       then:
         lambda: |-
-          updateTime(CanMembers[cm_manager], id(warmepumpe_uhrzeit).state.c_str());
+          updateTime(CanMembers[cm_kessel]);
 
   - platform: template
     name: "Update Datum"
@@ -414,7 +3713,7 @@ button:
     on_press:
       then:
         lambda: |-
-          updateDate(CanMembers[cm_manager], id(warmepumpe_datum).state.c_str());
+          updateDate(CanMembers[cm_kessel]);
 
   - platform: template
     name: "Republish MQTT Discoveries"
@@ -441,7 +3740,14 @@ button:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
-  use_address: 192.168.30.107  # production device IP for OTA
+  use_address: 192.168.178.158  # production device IP for OTA
+  manual_ip:
+    # Set this to the IP of the ESP
+    static_ip: 192.168.178.158
+    # Set this to the IP address of the router. Often ends with .1
+    gateway: 192.168.178.1
+    # The subnet of the network. 255.255.255.0 works for most home networks.
+    subnet: 255.255.255.0
   fast_connect: true
   power_save_mode: none
   reboot_timeout: 5min
@@ -503,6 +3809,10 @@ sensor:
       if (dBm > MAX_DBM) dBm = MAX_DBM;
       return ((dBm - MIN_DBM) / (MAX_DBM - MIN_DBM)) * 100;
 
+  # Compressor starts (VERDICHTERSTARTS1000 * 1000 + VERDICHTERSTARTS1) are calculated in C++
+  # and published via MQTT on the KESSEL device (heatingpump/KESSEL/VERDICHTERSTARTS_GESAMT/state).
+
+
   # -----------------------------------------------------------------------
   # COP energy accumulator sensors (universal — present on all Elster models)
   # -----------------------------------------------------------------------
@@ -562,15 +3872,8 @@ sensor:
 
   # DHW and heating temperature sensors
   - platform: template
-    name: "EINSTELL_SPEICHERSOLLTEMP"
-    id: EINSTELL_SPEICHERSOLLTEMP
-    internal: true
-    unit_of_measurement: "°C"
-    accuracy_decimals: 1
-
-  - platform: template
-    name: "EINSTELL_SPEICHERSOLLTEMP2"
-    id: EINSTELL_SPEICHERSOLLTEMP2
+    name: "WW_SOLL_TAG"
+    id: WW_SOLL_TAG
     internal: true
     unit_of_measurement: "°C"
     accuracy_decimals: 1
@@ -619,7 +3922,7 @@ sensor:
     id: PROGRAMMSCHALTER
     internal: true
     lambda: |-
-      readSignal(&CanMembers[cm_manager], "PROGRAMMSCHALTER");
+      readSignal(&CanMembers[cm_kessel], "PROGRAMMSCHALTER");
       return {};
 
   - platform: template
@@ -627,7 +3930,7 @@ sensor:
     id: SOMMERBETRIEB
     internal: true
     lambda: |-
-      readSignal(&CanMembers[cm_manager], "SOMMERBETRIEB");
+      readSignal(&CanMembers[cm_kessel], "SOMMERBETRIEB");
       return {};
 
   - platform: template
@@ -635,5 +3938,5 @@ sensor:
     id: WW_ECO
     internal: true
     lambda: |-
-      readSignal(&CanMembers[cm_manager], "WW_ECO");
+      readSignal(&CanMembers[cm_kessel], "WW_ECO");
       return {};

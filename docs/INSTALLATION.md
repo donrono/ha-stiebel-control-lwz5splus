@@ -37,7 +37,6 @@ mqtt_password: "your_mqtt_password"
 # Must match the key stored in HA's ESPHome integration for this device.
 api_encryption_key: "your-32-byte-base64-key=="
 
-ota_password: "change_me"
 ```
 
 > **Important:** `secrets.yaml` is gitignored. Never commit it.
@@ -50,17 +49,17 @@ Open `esphome/heatingpump.yaml`. The ESP32-S3 block is active by default. Adjust
 substitutions:
   device_name: heatingpump
   friendly_name: "Stiebel Eltron Wärmepumpe"
-  device_model: "wpl13e"          # your heat pump model — see Supported Models in README
+  device_model: "lwz5splus"          # your heat pump model — see Supported Models in README
   language: "DE"                  # display language for HA entity names: DE (default) or EN
   can_tx_pin: YOUR_CAN_TX          # board-specific — see pin note below
   can_rx_pin: YOUR_CAN_RX          # board-specific — see pin note below
-  can_id_pc: "0x680"
+  can_id_pc: "0x69F"
 
 packages:
   board:   !include ha-stiebel-control/board_esp32s3.yaml
   can:     !include ha-stiebel-control/can_esp32.yaml
   base:    !include ha-stiebel-control/common.yaml
-  sensors: !include ha-stiebel-control/wpl13e.yaml
+  sensors: !include ha-stiebel-control/lwz5splus.yaml
 ```
 
 > **Language:** German is the default. Change `language: "DE"` to `language: "EN"` if you prefer English entity names in Home Assistant. The language is baked into the firmware at compile time — recompile and re-flash after changing it.
@@ -69,12 +68,6 @@ packages:
 > The `heatingpump.yaml` shipped in this repo already has correct values for the
 > **Waveshare ESP32-S3-RS485-CAN** board: `can_tx_pin: GPIO15`, `can_rx_pin: GPIO16`.
 > For any other board, update these values before flashing.
-
-For ESP32-S2 + MCP2515, comment out the S3 block and uncomment the S2 block at the bottom
-of the file. The SPI pins (`can_clk_pin`, `can_mosi_pin`, `can_miso_pin`, `can_cs_pin`) are
-also board-specific. The repo ships with values typical for a generic ESP32 DevKit with a
-standard MCP2515 breakout module (CLK: GPIO18, MOSI: GPIO23, MISO: GPIO19, CS: GPIO5) —
-verify these against your specific board before flashing.
 
 ### 4. Compile and flash
 
@@ -119,17 +112,17 @@ Create a file called `heatingpump.yaml` in your ESPHome config folder (usually `
 substitutions:
   device_name: heatingpump
   friendly_name: "Stiebel Eltron Wärmepumpe"
-  device_model: "wpl13e"
+  device_model: "lwz5splus"
   language: "DE"            # DE (default) or EN
   can_tx_pin: YOUR_CAN_TX   # board-specific: Waveshare ESP32-S3-RS485-CAN → GPIO15
   can_rx_pin: YOUR_CAN_RX   # board-specific: Waveshare ESP32-S3-RS485-CAN → GPIO16
-  can_id_pc: "0x680"
+  can_id_pc: "0x69F"
 
 packages:
   board:   github://bullitt186/ha-stiebel-control/esphome/ha-stiebel-control/board_esp32s3.yaml@v2.0.0
   can:     github://bullitt186/ha-stiebel-control/esphome/ha-stiebel-control/can_esp32.yaml@v2.0.0
   base:    github://bullitt186/ha-stiebel-control/esphome/ha-stiebel-control/common.yaml@v2.0.0
-  sensors: github://bullitt186/ha-stiebel-control/esphome/ha-stiebel-control/wpl13e.yaml@v2.0.0
+  sensors: github://bullitt186/ha-stiebel-control/esphome/ha-stiebel-control/lwz5splus.yaml@main
 ```
 
 ESPHome will download and cache the package files automatically on first compile.
@@ -151,23 +144,11 @@ Ensure the MQTT integration is configured in HA:
 
 Entities from the heat pump will appear automatically — no manual configuration needed.
 
-### HA Helper Package (optional)
+### Heat pump clock
 
-The `packages/ha_stiebel_control.yaml` file adds `input_datetime` helpers used to set the
-heat pump's date and time from HA.
-
-Copy it to your HA config:
-```bash
-cp packages/ha_stiebel_control.yaml /config/packages/
-```
-
-Enable packages in `/config/configuration.yaml`:
-```yaml
-homeassistant:
-  packages: !include_dir_named packages
-```
-
-Restart Home Assistant.
+No HA helpers are needed: the buttons **Update Uhrzeit** / **Update Datum** set the heat pump's
+time and date from the ESP's SNTP time. Seconds are only written if the model requests the
+`SEKUNDE` signal (the LWZ 5S Plus has none).
 
 ---
 

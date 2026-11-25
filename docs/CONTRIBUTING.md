@@ -15,11 +15,8 @@ Create `esphome/ha-stiebel-control/signal_requests_yourmodel.h`:
 #define SIGNAL_REQUESTS_YOURMODEL_H
 
 #include "config.h"
-#include "signal_requests_base.h"   // universal signals: date/time, EVU, COP counters
 
 extern const SignalRequest signalRequests[] = {
-    SIGNAL_REQUESTS_BASE   // always include this first — do not duplicate these signals
-
     // Add your model-specific signals below.
     // Format: {"SIGNAL_NAME", FREQUENCY, CAN_MEMBER}
     //

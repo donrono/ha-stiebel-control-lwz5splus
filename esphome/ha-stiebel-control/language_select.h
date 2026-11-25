@@ -23,7 +23,7 @@
 #define LANGUAGE_SELECT_ACTIVE
 
 #if defined(HA_LANGUAGE_EN)
-  #include "lang_en.h"
+#include "lang_en.h"
 #else
-  #include "lang_base.h"
+#include "lang_base.h"
 #endif

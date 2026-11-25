@@ -122,7 +122,7 @@ Maximum DHW temperature is typically 55–60°C per manufacturer — check your 
 │  Home Assistant         │
 │  select.manager_sg_...  │
 └──────────────┬──────────┘
-               │ MQTT heatingpump/MANAGER/SG_READY_STATE/set
+               │ MQTT heatingpump/KESSEL/SG_READY_STATE/set
                ▼
 ┌─────────────────────────┐
 │  ESPHome ESP32          │

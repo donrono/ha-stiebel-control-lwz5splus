@@ -93,7 +93,7 @@ public:
 
         // Publish new state to MQTT
         char topic[128];
-        snprintf(topic, sizeof(topic), "heatingpump/MANAGER/SG_READY_STATE/state");
+        snprintf(topic, sizeof(topic), "heatingpump/KESSEL/SG_READY_STATE/state");
         io_.publishMqtt(topic, stateLabel(newState));
 
         switch (newState) {
@@ -173,7 +173,7 @@ private:
         if (state_.active && state_.originalDhwTemp > 0.0f) {
             char buf[16];
             snprintf(buf, sizeof(buf), "%.1f", state_.originalDhwTemp);
-            io_.writeCanSignal("EINSTELL_SPEICHERSOLLTEMP", buf);
+            io_.writeCanSignal("WW_SOLL_TAG", buf);
             state_.originalDhwTemp = 0.0f;
         }
     }
@@ -221,7 +221,7 @@ private:
             if (boosted > MAX_DHW_TEMP) boosted = MAX_DHW_TEMP;
             char buf[16];
             snprintf(buf, sizeof(buf), "%.1f", boosted);
-            io_.writeCanSignal("EINSTELL_SPEICHERSOLLTEMP", buf);
+            io_.writeCanSignal("WW_SOLL_TAG", buf);
         }
 
         float boostedRoom = state_.originalRoomTemp + ROOM_BOOST_STATE3;
@@ -243,7 +243,7 @@ private:
             if (boosted > MAX_DHW_TEMP) boosted = MAX_DHW_TEMP;
             char buf[16];
             snprintf(buf, sizeof(buf), "%.1f", boosted);
-            io_.writeCanSignal("EINSTELL_SPEICHERSOLLTEMP", buf);
+            io_.writeCanSignal("WW_SOLL_TAG", buf);
         }
 
         float boostedRoom = state_.originalRoomTemp + ROOM_BOOST_STATE4;

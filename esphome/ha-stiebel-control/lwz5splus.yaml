@@ -1,7 +1,7 @@
 #
-#  WPL13E Heat Pump — Model Package
+#  LWZ5SPLUS Heat Pump — Model Package
 #
-#  Selects the WPL13E signal request table (SIGNAL_REQUESTS_BASE + WPL13E-specific
+#  Selects the LWZ5SPLUS signal request table (SIGNAL_REQUESTS_BASE + LWZ5SPLUS-specific
 #  signals). All universal sensors live in common.yaml.
 #
 #  To add a new model, create signal_requests_yourmodel.h and a thin yourmodel.yaml
@@ -10,4 +10,4 @@
 
 esphome:
   includes:
-    - ha-stiebel-control/signal_requests_wpl13e.h
+    - ha-stiebel-control/signal_requests_lwz5splus.h

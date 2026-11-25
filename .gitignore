@@ -10,3 +10,12 @@ secrets.yaml
 # Added by cargo
 
 /target
+manuals/Industrial ESP32-S3 Control Board With RS485 And CAN Communication Interfaces, Supports Wi-Fi 
+manuals/Industrial ESP32-S3 Control Board With RS485 And CAN Communication Interfaces, Supports Wi-Fi : Blue.pdf
+tmp/mqtt.yaml
+tmp/StiebelEltron.json
+esphome/secrets christoph.yaml
+esphome/ha-stiebel-control/ha-stiebel-control.h.bak
+manuals/Industrial ESP32-S3 Control Board With RS485 And CAN Communication Interfaces, Supports Wi-Fi 
+manuals/Industrial ESP32-S3 Control Board With RS485 And CAN Communication Interfaces, Supports Wi-Fi : Blue.pdf
+manuals/Industrial ESP32-S3 Control Board With RS485 And CAN Communication Interfaces, Supports Wi-Fi 

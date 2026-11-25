@@ -12,19 +12,13 @@ ha-stiebel-control/
 │   ├── secrets.yaml.example                # Template for new users
 │   ├── ci_secrets.yaml                     # Placeholder credentials for CI
 │   ├── ci_heatingpump_s3.yaml              # CI compile target (ESP32-S3)
-│   ├── ci_heatingpump_s2.yaml              # CI compile target (ESP32-S2)
 │   └── ha-stiebel-control/
 │       ├── common.yaml                     # Shared: WiFi, MQTT, API, OTA, sensors, SG Ready
 │       ├── board_esp32s3.yaml              # ESP32-S3 hardware config (16MB flash, OPI PSRAM)
-│       ├── board_esp32s2.yaml              # ESP32-S2 / generic ESP32 hardware config
 │       ├── can_esp32.yaml                  # Built-in TWAI CAN (256 RX / 64 TX queue)
-│       ├── can_mcp2515.yaml                # MCP2515 SPI CAN (legacy)
-│       ├── wpl13e.yaml                     # Model: WPL 13 E — includes signal table
-│       ├── wpf10.yaml                      # Model: WPF 10 / WPF 10M — community
-│       ├── signal_requests_base.h          # Universal signals macro (all models)
+│       ├── lwz5splus.yaml                  # Model: LWZ 5S Plus — includes signal table
 │       ├── signal_requests_model.h         # Dispatcher (selects model at compile time)
-│       ├── signal_requests_wpl13e.h        # WPL13E signal polling table
-│       ├── signal_requests_wpf10.h         # WPF10 signal polling table
+│       ├── signal_requests_lwz5splus.h    # LWZ5SPLUS signal polling table
 │       ├── ha-stiebel-control.h            # Core C++: CAN, MQTT discovery, calculated sensors
 │       ├── sg_ready_controller.h           # SG Ready state machine (pure C++, testable)
 │       ├── config.h                        # Timing constants, limits
@@ -33,7 +27,6 @@ ha-stiebel-control/
 │           ├── KElsterTable.cpp/h          # Table lookup, value conversion
 │           └── NUtils.cpp/h, NTypes.h      # Utility functions and types
 ├── packages/
-│   ├── ha_stiebel_control.yaml             # HA helpers (input_datetime for clock sync)
 │   └── sg_ready_automation_example.yaml    # Example automation: E3DC → SG Ready
 ├── tests/
 │   ├── test_sg_ready.cpp                   # Catch2 tests for SgReadyController
@@ -45,8 +38,7 @@ ha-stiebel-control/
 │   ├── test_mqtt_smoke.py                  # MQTT regression test (post-OTA)
 │   └── models/
 │       ├── _common_smoke.json              # Required MQTT topics: all models
-│       ├── wpl13e_smoke.json               # Required MQTT topics: WPL13E
-│       └── wpf10_smoke.json                # Required MQTT topics: WPF10 (community stub)
+│       ├── lwz5splus_smoke.json            # Required MQTT topics: LWZ5SPLUS (to be captured)
 ├── docs/                                   # Extended documentation
 ├── manuals/                                # PDF manuals for reference
 ├── Makefile                                # Developer task runner
@@ -68,9 +60,6 @@ Heat Pump CAN Bus (Elster Protocol, 20kbps)
          ▼
 ESP32-S3 (built-in TWAI controller)
   — Waveshare ESP32-S3-RS485-CAN: GPIO15 TX, GPIO16 RX
-  — other boards: check schematic
- or ESP32-S2 + MCP2515 (SPI)
-  — generic DevKit: CLK GPIO18, MOSI GPIO23, MISO GPIO19, CS GPIO5
   — other boards: check schematic
          │
          ▼
@@ -104,7 +93,7 @@ Home Assistant
 
 ## CAN Bus Architecture
 
-The ESP32 acts as `PC` (CAN ID `0x680`) on the heat pump's internal CAN bus. It sends
+The ESP32 acts as `PC` (CAN ID `0x69F`) on the heat pump's internal CAN bus. It sends
 read requests to specific CAN members and listens for their responses.
 
 CAN member IDs:
@@ -114,7 +103,7 @@ CAN member IDs:
 | `KESSEL` | 0x180 | Boiler / storage tank |
 | `MANAGER` | 0x480 | Main controller |
 | `HEIZMODUL` | 0x500 | Heat pump compressor module |
-| `PC` | 0x680 | Our ESP32 (transmit address) |
+| `PC` | 0x69F | Our ESP32 (transmit address) |
 
 The `CanMember` struct:
 ```cpp
@@ -131,16 +120,12 @@ two-byte extended index (0xFA prefix + 2 bytes).
 
 ## Multi-Model Architecture
 
-Signal polling is split into two layers to avoid duplication across models:
+Signal polling is defined per model:
 
-**`signal_requests_base.h`** — `SIGNAL_REQUESTS_BASE` macro with universal signals present
-on all Elster heat pumps (date/time, EVU lock, operating mode, energy counters).
-
-**`signal_requests_<model>.h`** — model-specific file that starts with `SIGNAL_REQUESTS_BASE`
-and appends model-specific signals. Defines `signalRequests[]` and `SIGNAL_REQUEST_COUNT_VALUE`.
+**`signal_requests_<model>.h`** — the complete polling table of the model (only signals validated on the device). Defines `signalRequests[]` and `SIGNAL_REQUEST_COUNT_VALUE`.
 
 **`signal_requests_model.h`** — dispatcher that `#include`s the right model file based on
-the `HA_MODEL_*` preprocessor flag (currently selects wpl13e or wpf10).
+the `HA_MODEL_*` preprocessor flag (currently selects lwz5splus).
 
 **`<model>.yaml`** — thin ESPHome package that brings the model `.h` into the build via
 `esphome: includes:`.
