@@ -1,13 +1,16 @@
 # Ignore VS Code and ESPHome settings files, but not .claude/settings.json
 .vscode/settings.json
-esphome/ha-stiebel-control/config.h
 tests/run_tests
+tests/*.o
+tests/.build-flags
+tests/*.obj
 .DS_Store
 .vscode
 secrets.yaml
+config/
 /venv
 
-# Added by cargo
+tests/*.o
 
 /target
 manuals/Industrial ESP32-S3 Control Board With RS485 And CAN Communication Interfaces, Supports Wi-Fi 

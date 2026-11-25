@@ -17,3 +17,14 @@ community work by [roberreiters](https://community.home-assistant.io/t/configure
 | Option | Board | CAN interface | Recommended |
 |--------|-------|---------------|-------------|
 | ESP32-S3 | Waveshare ESP32-S3-RS485-CAN (or similar) | Built-in TWAI | ✅ Yes |
+
+## Quick Start
+
+```bash
+git clone https://github.com/bullitt186/ha-stiebel-control.git
+cd ha-stiebel-control
+cp esphome/secrets.yaml.example esphome/secrets.yaml
+# fill in your WiFi, MQTT, and API credentials in secrets.yaml
+#fill in device ip, gateway and subnet in common.yaml (use_address, static_ip, gateway, subnet)
+esphome run esphome/heatingpump.yaml
+```
